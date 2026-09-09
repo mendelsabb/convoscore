@@ -1,0 +1,371 @@
+"""The scoring worker.
+
+A long-running process that pulls job ids off SQS and scores them. Kubernetes runs a Deployment of
+these; nothing creates a pod per conversation.
+
+Two orderings matter, and both are load-bearing:
+
+1. **The result is committed to PostgreSQL before the SQS message is deleted.** If the process dies
+   in between, the message is redelivered and the job is found already complete, so the message is
+   simply acknowledged. The reverse order would lose results whenever a worker died at the wrong
+   moment.
+2. **The job is claimed before the model is called, and a job that is already finished is never
+   scored again.** At-least-once delivery means duplicates are normal, not exceptional; without
+   this check every duplicate would be a second OpenAI charge for a result we already have.
+
+The LLM call happens outside any database transaction. Holding one open across a multi-second
+network call would pin a connection and lengthen every lock it holds.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import random
+import signal
+import sys
+import time
+import uuid
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from enum import StrEnum, auto
+from types import FrameType
+from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.config import Settings, get_settings
+from app.db import get_engine, get_session_factory, wait_for_schema
+from app.factories import build_provider, build_queue
+from app.logging import configure_logging, get_logger
+from app.models import ErrorType
+from app.queue import QueueMessage, QueueUnavailableError, SqsQueue
+from app.repository import (
+    ClaimOutcome,
+    claim_job,
+    complete_job,
+    fail_job,
+    get_job,
+    release_job_for_retry,
+)
+from app.scoring.provider import (
+    LLMError,
+    LLMInvalidResponseError,
+    LLMPermanentError,
+    LLMProvider,
+)
+
+log = get_logger(__name__)
+
+
+class ProcessOutcome(StrEnum):
+    IDLE = auto()
+    COMPLETED = auto()
+    RETRY_SCHEDULED = auto()
+    FAILED = auto()
+    DUPLICATE_SKIPPED = auto()
+    HELD_BY_ANOTHER_WORKER = auto()
+    UNKNOWN_JOB = auto()
+    MALFORMED_MESSAGE = auto()
+    LOST_CLAIM = auto()
+
+
+@dataclass(frozen=True)
+class RetryDecision:
+    retry: bool
+    error_type: ErrorType
+    backoff_seconds: int
+
+
+def backoff_seconds(
+    attempt: int, base: int, maximum: int, jitter: Callable[[], float] = random.random
+) -> int:
+    """Exponential backoff with jitter, in seconds.
+
+    Jitter matters with several workers: without it, a provider outage would synchronise every
+    retry into simultaneous bursts against a service that is already struggling.
+    """
+    capped = min(maximum, base * (2 ** max(0, attempt - 1)))
+    return max(1, int(capped * (0.5 + 0.5 * jitter())))
+
+
+def decide_retry(
+    error: LLMError,
+    attempt_count: int,
+    max_attempts: int,
+    base_backoff: int,
+    max_backoff: int,
+    jitter: Callable[[], float] = random.random,
+) -> RetryDecision:
+    """Decide what to do with a failed attempt.
+
+    Permanent errors are never retried: a bad API key or a malformed request will fail identically
+    every time, and retrying only delays the failure and wastes quota.
+
+    An invalid response gets exactly one more chance. Once is plausibly a bad sample; twice means
+    the prompt, the schema or the model is wrong, and more attempts will not fix it.
+    """
+    delay = backoff_seconds(attempt_count, base_backoff, max_backoff, jitter)
+
+    if isinstance(error, LLMPermanentError):
+        return RetryDecision(False, error.error_type, delay)
+
+    if isinstance(error, LLMInvalidResponseError):
+        retry = attempt_count < min(2, max_attempts)
+        return RetryDecision(retry, error.error_type, delay)
+
+    if attempt_count >= max_attempts:
+        return RetryDecision(False, ErrorType.MAX_ATTEMPTS_EXHAUSTED, delay)
+    return RetryDecision(True, error.error_type, delay)
+
+
+class Worker:
+    """Receives, claims, scores, persists, acknowledges. One message at a time."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        queue: SqsQueue,
+        provider: LLMProvider,
+        session_factory: Callable[[], Session] | None = None,
+    ) -> None:
+        self.settings = settings
+        self.queue = queue
+        self.provider = provider
+        self._session_factory = session_factory or (lambda: get_session_factory()())
+        self._stop = False
+        self.last_heartbeat = time.time()
+
+    # -- lifecycle ---------------------------------------------------------------------
+
+    def request_stop(self, signum: int | None = None, frame: FrameType | None = None) -> None:
+        """Stop after the current message.
+
+        Kubernetes sends SIGTERM on every rollout. Finishing the in-flight job and then exiting
+        means a deploy does not manufacture retries and half-scored jobs.
+        """
+        log.info("shutdown_requested", extra={"signal": signum})
+        self._stop = True
+
+    @property
+    def stopping(self) -> bool:
+        return self._stop
+
+    @contextlib.contextmanager
+    def _session(self) -> Iterator[Session]:
+        session = self._session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # -- main loop ---------------------------------------------------------------------
+
+    def run_forever(self) -> None:
+        log.info(
+            "worker_started",
+            extra={"queue": self.queue.queue_name, "provider": self.provider.name},
+        )
+        consecutive_queue_errors = 0
+        while not self._stop:
+            try:
+                self.run_once()
+                consecutive_queue_errors = 0
+            except QueueUnavailableError as exc:
+                # The queue may genuinely be gone (LocalStack restarted). Back off, then re-resolve.
+                consecutive_queue_errors += 1
+                delay = min(30, 2**consecutive_queue_errors)
+                log.warning(
+                    "queue_unavailable",
+                    extra={"error": str(exc), "backoff_seconds": delay,
+                           "consecutive_errors": consecutive_queue_errors},
+                )
+                self.queue.forget_url()
+                self._sleep(delay)
+            except SQLAlchemyError as exc:
+                # Leave the message unacknowledged: SQS will redeliver once the database is back.
+                log.error("database_error", extra={"error": str(exc)})
+                self._sleep(5)
+            except Exception:
+                log.exception("worker_iteration_failed")
+                self._sleep(5)
+        log.info("worker_stopped")
+
+    def _sleep(self, seconds: float) -> None:
+        """Interruptible sleep, so SIGTERM does not have to wait out a long backoff."""
+        deadline = time.monotonic() + seconds
+        while not self._stop and time.monotonic() < deadline:
+            time.sleep(min(0.5, deadline - time.monotonic()))
+
+    def run_once(self) -> ProcessOutcome:
+        """Handle at most one message. Returns IDLE when the queue is empty."""
+        self.last_heartbeat = time.time()
+        messages = self.queue.receive(
+            wait_time_seconds=self.settings.worker_wait_time_seconds, max_messages=1
+        )
+        if not messages:
+            return ProcessOutcome.IDLE
+        return self.process(messages[0])
+
+    # -- one message -------------------------------------------------------------------
+
+    def process(self, message: QueueMessage) -> ProcessOutcome:
+        job_id = message.job_id
+        if job_id is None:
+            # Nothing we can ever do with this. Drop it rather than let it cycle to the DLQ.
+            log.error("malformed_message_discarded", extra={"message_id": message.message_id})
+            self.queue.delete(message.receipt_handle)
+            return ProcessOutcome.MALFORMED_MESSAGE
+
+        claim = self._claim(job_id)
+
+        if claim is ClaimOutcome.NOT_FOUND:
+            log.warning("job_not_found", extra={"job_id": str(job_id)})
+            self.queue.delete(message.receipt_handle)
+            return ProcessOutcome.UNKNOWN_JOB
+
+        if claim is ClaimOutcome.ALREADY_FINISHED:
+            # A duplicate delivery of work that is already done. Acknowledge it and, crucially,
+            # do not call the model again.
+            log.info(
+                "duplicate_delivery_skipped",
+                extra={"job_id": str(job_id), "receive_count": message.receive_count},
+            )
+            self.queue.delete(message.receipt_handle)
+            return ProcessOutcome.DUPLICATE_SKIPPED
+
+        if claim is ClaimOutcome.HELD_BY_ANOTHER_WORKER:
+            # Someone else is on it. Leave the message; SQS redelivers if they die.
+            log.info("job_held_by_another_worker", extra={"job_id": str(job_id)})
+            return ProcessOutcome.HELD_BY_ANOTHER_WORKER
+
+        return self._score_and_persist(job_id, message)
+
+    def _claim(self, job_id: uuid.UUID) -> ClaimOutcome:
+        """Take the job in its own short transaction, so other workers see it immediately."""
+        with self._session() as session:
+            return claim_job(session, job_id, self.settings.visibility_timeout_seconds).outcome
+
+    def _score_and_persist(self, job_id: uuid.UUID, message: QueueMessage) -> ProcessOutcome:
+        with self._session() as session:
+            job = get_job(session, job_id)
+            if job is None:  # pragma: no cover - it was claimed a moment ago
+                self.queue.delete(message.receipt_handle)
+                return ProcessOutcome.UNKNOWN_JOB
+            conversation: dict[str, Any] = job.conversation
+            attempt = job.attempt_count
+
+        started = time.monotonic()
+        try:
+            outcome = self.provider.score(conversation)
+        except LLMError as error:
+            return self._handle_failure(job_id, message, error, attempt)
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+
+        # Persist the result BEFORE acknowledging the message. If the process dies here, the
+        # message reappears, the job is found completed, and it is acknowledged without re-scoring.
+        with self._session() as session:
+            persisted = complete_job(
+                session,
+                job_id,
+                sentiment=outcome.result.sentiment,
+                risk_score=outcome.result.risk_score,
+                rationale=outcome.result.rationale,
+                model=outcome.model,
+                prompt_version=outcome.prompt_version,
+                schema_version=outcome.schema_version,
+                prompt_tokens=outcome.prompt_tokens,
+                completion_tokens=outcome.completion_tokens,
+                total_tokens=outcome.total_tokens,
+                llm_latency_ms=outcome.latency_ms,
+                estimated_cost_usd=outcome.estimated_cost_usd,
+                pricing_version=outcome.pricing_version,
+            )
+
+        if not persisted:
+            # Our claim expired and another worker finished it. Its result stands; ours is dropped.
+            log.warning("claim_lost_result_discarded", extra={"job_id": str(job_id)})
+            self.queue.delete(message.receipt_handle)
+            return ProcessOutcome.LOST_CLAIM
+
+        self.queue.delete(message.receipt_handle)
+        log.info(
+            "job_completed",
+            extra={
+                "job_id": str(job_id),
+                "attempt": attempt,
+                "risk_score": outcome.result.risk_score,
+                "sentiment": outcome.result.sentiment,
+                "model": outcome.model,
+                "llm_latency_ms": outcome.latency_ms,
+                "total_tokens": outcome.total_tokens,
+                "duration_ms": duration_ms,
+            },
+        )
+        return ProcessOutcome.COMPLETED
+
+    def _handle_failure(
+        self, job_id: uuid.UUID, message: QueueMessage, error: LLMError, attempt: int
+    ) -> ProcessOutcome:
+        decision = decide_retry(
+            error,
+            attempt_count=attempt,
+            max_attempts=self.settings.max_attempts,
+            base_backoff=self.settings.retry_base_backoff_seconds,
+            max_backoff=self.settings.retry_max_backoff_seconds,
+        )
+
+        if decision.retry:
+            with self._session() as session:
+                release_job_for_retry(session, job_id, decision.error_type, str(error))
+            # Extend visibility instead of deleting: the retry is owned by SQS, so it happens even
+            # if this worker dies right now.
+            self.queue.change_visibility(message.receipt_handle, decision.backoff_seconds)
+            log.warning(
+                "job_attempt_failed_retrying",
+                extra={
+                    "job_id": str(job_id),
+                    "attempt": attempt,
+                    "max_attempts": self.settings.max_attempts,
+                    "error_type": decision.error_type.value,
+                    "backoff_seconds": decision.backoff_seconds,
+                },
+            )
+            return ProcessOutcome.RETRY_SCHEDULED
+
+        with self._session() as session:
+            fail_job(session, job_id, decision.error_type, str(error))
+        self.queue.delete(message.receipt_handle)
+        log.error(
+            "job_failed",
+            extra={
+                "job_id": str(job_id),
+                "attempt": attempt,
+                "error_type": decision.error_type.value,
+            },
+        )
+        return ProcessOutcome.FAILED
+
+
+def main() -> int:
+    settings = get_settings()
+    configure_logging("worker", settings.log_level, settings.log_json)
+
+    # Migrations run in the API pod's init container, so the schema may not exist yet on a first
+    # install. Waiting keeps this pod out of a crash loop.
+    wait_for_schema(get_engine())
+
+    worker = Worker(settings, build_queue(settings), build_provider(settings))
+    signal.signal(signal.SIGTERM, worker.request_stop)
+    signal.signal(signal.SIGINT, worker.request_stop)
+    worker.run_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -11,8 +11,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api import conversations, stats
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, ping
+from app.factories import build_queue
 from app.logging import configure_logging, get_logger
-from app.queue import InMemoryPublisher, JobPublisher
+from app.queue import JobPublisher, SqsPublisher
 
 log = get_logger(__name__)
 
@@ -29,14 +30,13 @@ follow exactly the same pipeline and appear here with `source = s3`.
 def build_publisher(settings: Settings) -> JobPublisher:
     """Choose how job ids are enqueued.
 
-    The SQS publisher is wired in with the worker (milestone 3); until then jobs are recorded in
-    memory so the API is fully usable and testable on its own.
+    The queue URL is resolved lazily on first publish, not here: the API must start and serve
+    reads even if the queue is temporarily unreachable. A failed publish surfaces as a 503 on that
+    one request rather than a pod that will not start.
     """
-    log.warning(
-        "queue_not_configured_using_in_memory_publisher",
-        extra={"environment": settings.environment},
-    )
-    return InMemoryPublisher()
+    queue = build_queue(settings)
+    log.info("queue_configured", extra={"queue": settings.sqs_queue_name})
+    return SqsPublisher(queue)
 
 
 @asynccontextmanager

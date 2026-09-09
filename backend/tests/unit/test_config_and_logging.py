@@ -39,8 +39,23 @@ def test_password_is_redacted_in_repr_and_summary() -> None:
 
 
 def test_safe_summary_contains_no_credentials() -> None:
-    summary = Settings(postgres_password="hunter2").safe_summary()
-    assert set(summary) == {"environment", "component", "demo_mode", "max_attempts"}
+    """The summary is exposed over the API, so it must never carry a secret value."""
+    settings = Settings(
+        postgres_password="hunter2",
+        openai_api_key="sk-super-secret",
+        aws_secret_access_key="aws-secret",
+    )
+    rendered = str(settings.safe_summary())
+
+    for secret in ("hunter2", "sk-super-secret", "aws-secret"):
+        assert secret not in rendered
+    assert not any("key" in field or "password" in field for field in settings.safe_summary())
+
+
+def test_key_configured_flag_reports_presence_without_exposing_the_value() -> None:
+    assert Settings(openai_api_key="sk-real").openai_key_configured is True
+    assert Settings(openai_api_key=None).openai_key_configured is False
+    assert Settings(openai_api_key="   ").openai_key_configured is False
 
 
 def test_log_lines_are_json_with_structured_fields() -> None:

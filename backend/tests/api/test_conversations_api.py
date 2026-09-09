@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from decimal import Decimal
 
@@ -195,9 +196,17 @@ def test_stats_are_safe_on_an_empty_database(client: TestClient) -> None:
 def test_health_details_reports_dependencies_and_versions(client: TestClient) -> None:
     body = client.get("/api/health/details").json()
     assert body["healthy"] is True
-    assert [dependency["name"] for dependency in body["dependencies"]] == ["postgres"]
+    assert [dependency["name"] for dependency in body["dependencies"]] == ["postgres", "sqs"]
     assert body["config"]["prompt_version"] == "v1"
     assert body["config"]["schema_version"] == "1"
+    assert body["config"]["pricing_version"] == "2026-09"
+
+
+def test_health_details_never_exposes_the_api_key(client: TestClient) -> None:
+    """It reports whether a key is configured, never the key itself."""
+    body = client.get("/api/health/details").json()
+    assert body["config"]["openai_key_configured"] in (True, False)
+    assert "sk-" not in json.dumps(body)
 
 
 def test_openapi_documents_the_public_api(client: TestClient) -> None:
