@@ -106,6 +106,10 @@ class SqsQueue:
             self._queue_url = self._resolve_url()
         return self._queue_url
 
+    def sibling(self, queue_name: str) -> SqsQueue:
+        """Another queue on the same connection, for example the dead-letter queue."""
+        return SqsQueue(self._client, queue_name)
+
     def forget_url(self) -> None:
         """Drop the cached URL so the next call re-resolves it.
 

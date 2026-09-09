@@ -21,8 +21,9 @@ fi
 step "URLs"
 printf '     API and Swagger docs   %s/docs\n' "$API_URL"
 printf '     LocalStack (S3, SQS)   %s\n' "$LOCALSTACK_ENDPOINT"
-printf '     Review UI              http://127.0.0.1:8080  (milestone 6)\n'
-printf '     Grafana                http://127.0.0.1:3000  (milestone 7)\n'
+printf '     Review UI              %s\n' "$WEB_URL"
+printf '     Grafana                %s  (dashboard: ConvoScore Overview)\n' "$GRAFANA_URL"
+printf '     Prometheus             %s\n' "$PROMETHEUS_URL"
 printf '\n'
 
 # The JSON summaries below are formatted by python3 when it is available.

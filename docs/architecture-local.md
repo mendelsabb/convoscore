@@ -16,6 +16,10 @@ the machine is the request to OpenAI.
 | `prometheus` | Helm release | `prometheus-community/prometheus` | scrapes pods by annotation; kube-state-metrics included |
 | `grafana` | Helm release | `grafana/grafana` | one provisioned dashboard: *ConvoScore Overview* |
 
+The API serves `/metrics` on its own port; the worker and ingestor serve theirs on 9100. All three
+opt in to scraping with `prometheus.io` pod annotations, so no operator or CRD is involved. See
+[observability.md](observability.md).
+
 Namespaces: `convoscore` (application + PostgreSQL), `localstack`, `monitoring`.
 
 ## Data flow
@@ -106,12 +110,18 @@ holding an advisory lock). Worker and ingestor wait for the schema version befor
 | Process | Liveness | Readiness |
 |---|---|---|
 | api | `/healthz` — process is up | `/readyz` — PostgreSQL reachable (SQS/S3 status is reported in `/api/health/details` but does not gate readiness) |
-| worker | `/healthz` on the metrics port — loop heartbeat within 60 s | n/a (no Service) |
-| ingestor | `/healthz` on the metrics port — loop heartbeat within 60 s | n/a |
+| worker | heartbeat file newer than 180 s | n/a (no Service) |
+| ingestor | heartbeat file newer than 120 s | n/a |
+| web | nginx answers `/healthz` | same |
 | postgres | `pg_isready` | `pg_isready` |
 
 An OpenAI outage therefore never causes Kubernetes to restart healthy pods; it shows up as failed
 LLM calls and retries in metrics, which is the correct signal.
+
+The worker and ingestor are loops rather than servers, and Kubernetes already restarts a container
+whose process exits. Their probes exist to catch a process that is *stuck*: each loop pass touches
+a file, and the probe checks its age. The thresholds allow a full long poll plus an LLM timeout
+plus retry backoff before declaring a stall. Full detail in [observability.md](observability.md).
 
 ## Durability demo
 

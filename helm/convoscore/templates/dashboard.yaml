@@ -1,0 +1,19 @@
+{{- if .Values.monitoring.dashboard.enabled }}
+{{/*
+The Grafana dashboard, shipped by the application chart rather than by the monitoring stack.
+
+The dashboard travels with the code that emits the metrics, so renaming a metric and updating its
+panel happen in the same commit. Grafana's sidecar picks this up by label, wherever it is
+installed.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "convoscore.fullname" . }}-dashboard
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    {{ .Values.monitoring.dashboard.label }}: {{ .Values.monitoring.dashboard.labelValue | quote }}
+data:
+  convoscore-overview.json: |
+{{ .Files.Get "dashboards/convoscore-overview.json" | indent 4 }}
+{{- end }}

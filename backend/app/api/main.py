@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import conversations, stats
+from app.api import conversations, observability, stats
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, ping
 from app.factories import build_queue
@@ -63,6 +63,9 @@ def create_app() -> FastAPI:
 
     app.include_router(conversations.router, prefix="/api")
     app.include_router(stats.router, prefix="/api")
+
+    # Request metrics, database-derived gauges and /metrics.
+    observability.install(app)
 
     @app.get("/healthz", tags=["health"], summary="Liveness")
     def healthz() -> dict[str, str]:

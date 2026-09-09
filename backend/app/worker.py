@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app import metrics, metrics_server
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, wait_for_schema
 from app.factories import build_provider, build_queue
@@ -54,6 +55,7 @@ from app.scoring.provider import (
     LLMInvalidResponseError,
     LLMPermanentError,
     LLMProvider,
+    ScoringOutcome,
 )
 
 log = get_logger(__name__)
@@ -179,6 +181,7 @@ class Worker:
             except QueueUnavailableError as exc:
                 # The queue may genuinely be gone (LocalStack restarted). Back off, then re-resolve.
                 consecutive_queue_errors += 1
+                metrics.worker_receive_errors_total.labels(reason="queue_unavailable").inc()
                 delay = min(30, 2**consecutive_queue_errors)
                 log.warning(
                     "queue_unavailable",
@@ -189,9 +192,11 @@ class Worker:
                 self._sleep(delay)
             except SQLAlchemyError as exc:
                 # Leave the message unacknowledged: SQS will redeliver once the database is back.
+                metrics.worker_receive_errors_total.labels(reason="database").inc()
                 log.error("database_error", extra={"error": str(exc)})
                 self._sleep(5)
             except Exception:
+                metrics.worker_receive_errors_total.labels(reason="unexpected").inc()
                 log.exception("worker_iteration_failed")
                 self._sleep(5)
         log.info("worker_stopped")
@@ -206,6 +211,10 @@ class Worker:
         """Handle at most one message. Returns IDLE when the queue is empty."""
         self.last_heartbeat = time.time()
         touch_heartbeat()
+        metrics.worker_loop_iterations_total.inc()
+        metrics.component_heartbeat_timestamp_seconds.labels(component="worker").set(
+            self.last_heartbeat
+        )
         messages = self.queue.receive(
             wait_time_seconds=self.settings.worker_wait_time_seconds, max_messages=1
         )
@@ -233,6 +242,7 @@ class Worker:
         if claim is ClaimOutcome.ALREADY_FINISHED:
             # A duplicate delivery of work that is already done. Acknowledge it and, crucially,
             # do not call the model again.
+            metrics.job_attempts_total.labels(outcome="duplicate").inc()
             log.info(
                 "duplicate_delivery_skipped",
                 extra={"job_id": str(job_id), "receive_count": message.receive_count},
@@ -260,14 +270,16 @@ class Worker:
                 return ProcessOutcome.UNKNOWN_JOB
             conversation: dict[str, Any] = job.conversation
             attempt = job.attempt_count
+            source = job.source
 
         started = time.monotonic()
         try:
             outcome = self.provider.score(conversation)
         except LLMError as error:
-            return self._handle_failure(job_id, message, error, attempt)
+            return self._handle_failure(job_id, message, error, attempt, source)
 
         duration_ms = int((time.monotonic() - started) * 1000)
+        self._record_success_metrics(outcome)
 
         # Persist the result BEFORE acknowledging the message. If the process dies here, the
         # message reappears, the job is found completed, and it is acknowledged without re-scoring.
@@ -291,11 +303,15 @@ class Worker:
 
         if not persisted:
             # Our claim expired and another worker finished it. Its result stands; ours is dropped.
+            metrics.job_attempts_total.labels(outcome="lost_claim").inc()
             log.warning("claim_lost_result_discarded", extra={"job_id": str(job_id)})
             self.queue.delete(message.receipt_handle)
             return ProcessOutcome.LOST_CLAIM
 
         self.queue.delete(message.receipt_handle)
+        metrics.jobs_completed_total.labels(source=source).inc()
+        metrics.job_attempts_total.labels(outcome="completed").inc()
+        metrics.job_processing_duration_seconds.observe(duration_ms / 1000.0)
         log.info(
             "job_completed",
             extra={
@@ -311,9 +327,44 @@ class Worker:
         )
         return ProcessOutcome.COMPLETED
 
+    def _record_success_metrics(self, outcome: ScoringOutcome) -> None:
+        """Provider-level signals for a successful call: latency, tokens and estimated spend."""
+        model = outcome.model
+        metrics.llm_calls_total.labels(model=model, outcome="success").inc()
+        metrics.llm_latency_seconds.labels(model=model).observe(outcome.latency_ms / 1000.0)
+
+        if outcome.prompt_tokens is not None:
+            metrics.llm_tokens_total.labels(model=model, kind="prompt").inc(outcome.prompt_tokens)
+        if outcome.completion_tokens is not None:
+            metrics.llm_tokens_total.labels(model=model, kind="completion").inc(
+                outcome.completion_tokens
+            )
+
+        if outcome.estimated_cost_usd is not None:
+            metrics.llm_estimated_cost_usd_total.labels(model=model).inc(
+                float(outcome.estimated_cost_usd)
+            )
+        else:
+            # A model missing from the price table would otherwise make spend silently
+            # under-report, which is worse than a visible gap.
+            metrics.llm_pricing_unknown_total.labels(model=model).inc()
+
     def _handle_failure(
-        self, job_id: uuid.UUID, message: QueueMessage, error: LLMError, attempt: int
+        self,
+        job_id: uuid.UUID,
+        message: QueueMessage,
+        error: LLMError,
+        attempt: int,
+        source: str,
     ) -> ProcessOutcome:
+        # The provider call failed: record what kind of failure it was before deciding what to do
+        # about it, so the error mix is visible even for errors that are retried successfully.
+        metrics.llm_calls_total.labels(
+            model=self.settings.openai_model, outcome=error.error_type.value
+        ).inc()
+        if isinstance(error, LLMInvalidResponseError):
+            metrics.llm_validation_failures_total.inc()
+
         decision = decide_retry(
             error,
             attempt_count=attempt,
@@ -328,6 +379,8 @@ class Worker:
             # Extend visibility instead of deleting: the retry is owned by SQS, so it happens even
             # if this worker dies right now.
             self.queue.change_visibility(message.receipt_handle, decision.backoff_seconds)
+            metrics.llm_retries_total.labels(error_type=decision.error_type.value).inc()
+            metrics.job_attempts_total.labels(outcome="retried").inc()
             log.warning(
                 "job_attempt_failed_retrying",
                 extra={
@@ -343,6 +396,8 @@ class Worker:
         with self._session() as session:
             fail_job(session, job_id, decision.error_type, str(error))
         self.queue.delete(message.receipt_handle)
+        metrics.jobs_failed_total.labels(source=source, error_type=decision.error_type.value).inc()
+        metrics.job_attempts_total.labels(outcome="failed").inc()
         log.error(
             "job_failed",
             extra={
@@ -354,6 +409,46 @@ class Worker:
         return ProcessOutcome.FAILED
 
 
+def install_queue_gauges(queue: SqsQueue, dlq_name: str) -> None:
+    """Publish queue depth as scrape-time gauges.
+
+    Depth is a state, not an event, so it is read when Prometheus asks rather than pushed when
+    something happens: a stalled worker would otherwise leave the graph frozen at its last value.
+
+    Both worker replicas report the same numbers, so the dashboard aggregates with max() rather
+    than sum(). Attributes are cached briefly so a scrape does not mean an SQS call per replica
+    per second.
+    """
+    cache: dict[str, tuple[float, dict[str, int]]] = {}
+
+    def depths() -> dict[tuple[str, str], int]:
+        import time as _time
+
+        result: dict[tuple[str, str], int] = {}
+        for label, name in (("main", queue.queue_name), ("dlq", dlq_name)):
+            cached = cache.get(label)
+            if cached and _time.monotonic() - cached[0] < 10:
+                counts = cached[1]
+            else:
+                probe = queue if label == "main" else queue.sibling(name)
+                counts = probe.attributes()
+                cache[label] = (_time.monotonic(), counts)
+            result[(label, "visible")] = counts["visible"]
+            result[(label, "in_flight")] = counts["in_flight"]
+        return result
+
+    gauges = metrics.CallbackGauges()
+    gauges.register(
+        "convoscore_queue_messages",
+        "Messages on the scoring queue and its dead-letter queue.",
+        ["queue", "state"],
+        depths,
+    )
+    from prometheus_client import REGISTRY
+
+    REGISTRY.register(gauges)
+
+
 def main() -> int:
     settings = get_settings()
     configure_logging("worker", settings.log_level, settings.log_json)
@@ -362,7 +457,11 @@ def main() -> int:
     # install. Waiting keeps this pod out of a crash loop.
     wait_for_schema(get_engine())
 
-    worker = Worker(settings, build_queue(settings), build_provider(settings))
+    queue = build_queue(settings)
+    install_queue_gauges(queue, settings.sqs_dlq_name)
+    metrics_server.start(settings.metrics_port, component="worker")
+
+    worker = Worker(settings, queue, build_provider(settings))
     signal.signal(signal.SIGTERM, worker.request_stop)
     signal.signal(signal.SIGINT, worker.request_stop)
     worker.run_forever()

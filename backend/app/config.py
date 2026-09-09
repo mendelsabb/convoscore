@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     aws_access_key_id: str | None = None
     aws_secret_access_key: SecretStr | None = None
     sqs_queue_name: str = "convoscore-scoring"
+    # Read only for its depth: a non-empty dead-letter queue means messages are failing before the
+    # application can record why, which no application-level metric would show.
+    sqs_dlq_name: str = "convoscore-scoring-dlq"
     s3_bucket: str = "convoscore-conversations"
     # Only this prefix is read, and the ingestor's IAM policy is scoped to it.
     s3_prefix: str = "incoming/"
@@ -71,6 +74,10 @@ class Settings(BaseSettings):
     openai_timeout_seconds: float = Field(default=30.0, gt=0)
     # None sends no temperature at all, which reasoning models require.
     openai_temperature: float | None = 0.0
+
+    # --- observability ------------------------------------------------------------
+    # Where the worker and ingestor serve /metrics. The API serves it on its own port.
+    metrics_port: int = 9100
 
     # --- demo ---------------------------------------------------------------------
     demo_mode: bool = False

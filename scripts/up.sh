@@ -47,14 +47,42 @@ incoming_prefix="$(terraform -chdir="$TERRAFORM_DIR" output -raw incoming_prefix
 ok "queue: $queue_name"
 ok "bucket: $bucket_name (prefix $incoming_prefix)"
 
-# --- 4. image -----------------------------------------------------------------------------
+# --- 4. monitoring --------------------------------------------------------------------------
+# Installed before the application so that the very first pods are scraped from the moment they
+# start, rather than appearing in the graphs a minute late.
+if [ "${SKIP_MONITORING:-0}" = "1" ]; then
+  warn "skipping monitoring (SKIP_MONITORING=1)"
+else
+  step "Installing Prometheus and Grafana"
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo update prometheus-community grafana >/dev/null
+
+  helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install prometheus \
+    prometheus-community/prometheus \
+    --namespace "$MONITORING_NAMESPACE" --create-namespace \
+    --version "$PROMETHEUS_CHART_VERSION" \
+    --values "$REPO_ROOT/platform/prometheus-values.yaml" \
+    --wait --timeout 8m >/dev/null
+  ok "prometheus"
+
+  helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install grafana \
+    grafana/grafana \
+    --namespace "$MONITORING_NAMESPACE" --create-namespace \
+    --version "$GRAFANA_CHART_VERSION" \
+    --values "$REPO_ROOT/platform/grafana-values.yaml" \
+    --wait --timeout 8m >/dev/null
+  ok "grafana"
+fi
+
+# --- 5. image -----------------------------------------------------------------------------
 image_tag="$("$REPO_ROOT/scripts/build-images.sh" | tail -n 1)"
 ok "image tag: $image_tag"
 
-# --- 5. secrets ---------------------------------------------------------------------------
+# --- 6. secrets ---------------------------------------------------------------------------
 "$REPO_ROOT/scripts/secrets.sh"
 
-# --- 6. application -----------------------------------------------------------------------
+# --- 7. application -----------------------------------------------------------------------
 step "Installing the ConvoScore Helm release"
 # The resource names come straight from terraform output, so the application is wired to exactly
 # what Terraform created rather than to a name repeated in two places.
@@ -69,7 +97,7 @@ helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "$RELEASE_NAME" \
   --wait \
   --timeout 10m
 
-# --- 7. ready -----------------------------------------------------------------------------
+# --- 8. ready -----------------------------------------------------------------------------
 printf '     waiting for the API'
 wait_for "api" 120 curl -sf "$API_URL/readyz" || warn "the API is not answering yet; see: make status"
 printf '\n'

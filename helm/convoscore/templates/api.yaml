@@ -35,6 +35,8 @@ spec:
       labels:
         {{- include "convoscore.labels" . | nindent 8 }}
         app.kubernetes.io/component: api
+      annotations:
+        {{- include "convoscore.scrapeAnnotations" (dict "ctx" . "port" .Values.api.service.port) | nindent 8 }}
     spec:
       serviceAccountName: {{ include "convoscore.fullname" . }}-api
       {{- if .Values.migrations.enabled }}

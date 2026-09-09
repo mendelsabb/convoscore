@@ -28,12 +28,13 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app import metrics, metrics_server
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, wait_for_schema
 from app.factories import build_queue, build_storage
 from app.heartbeat import touch as touch_heartbeat
 from app.logging import configure_logging, get_logger
-from app.models import IngestStatus, JobSource
+from app.models import ErrorType, IngestStatus, JobSource
 from app.queue import JobPublisher, QueuePublishError, SqsPublisher
 from app.repository import (
     create_job,
@@ -142,12 +143,16 @@ class Ingestor:
 
     def poll_once(self) -> PollResult:
         touch_heartbeat()
+        metrics.component_heartbeat_timestamp_seconds.labels(component="ingestor").set(time.time())
+
+        started = time.monotonic()
         objects = self.store.list_objects()
         result = PollResult(discovered=len(objects))
         for stored in objects:
             if self._stop:
                 break
             result = result + self._handle(stored)
+        metrics.ingest_poll_duration_seconds.observe(time.monotonic() - started)
         return result
 
     def _handle(self, stored: StoredObject) -> PollResult:
@@ -155,6 +160,7 @@ class Ingestor:
 
         with self._session() as session:
             if object_already_seen(session, self.store.bucket, stored.key, stored.etag):
+                metrics.ingest_objects_total.labels(outcome="skipped_duplicate").inc()
                 return PollResult(skipped_duplicate=1)
 
         # Read outside the transaction: object storage is slow and occasionally unavailable, and
@@ -164,12 +170,14 @@ class Ingestor:
         except StorageUnavailableError as exc:
             # Deliberately not recorded: a read failure is usually transient, so leave the object
             # to be picked up on the next poll rather than marking it permanently handled.
+            metrics.ingest_objects_total.labels(outcome="failed").inc()
             log.warning("object_read_failed", extra={"object": uri, "error": str(exc)})
             return PollResult(failed=1)
 
         conversation, problem = self._parse(raw, stored)
         if conversation is None:
             self._record_invalid(stored, problem or "invalid object")
+            metrics.ingest_objects_total.labels(outcome="invalid").inc()
             log.warning("object_rejected", extra={"object": uri, "reason": problem})
             return PollResult(invalid=1)
 
@@ -234,6 +242,7 @@ class Ingestor:
                 job_id = job.id
         except IntegrityError:
             # Lost a race with another replica for this exact object.
+            metrics.ingest_objects_total.labels(outcome="skipped_duplicate").inc()
             log.info("object_claimed_by_another_ingestor", extra={"object": uri})
             return PollResult(skipped_duplicate=1)
 
@@ -244,12 +253,19 @@ class Ingestor:
             # is visible rather than sitting pending forever.
             with self._session() as session:
                 mark_enqueue_failed(session, job_id, str(exc))
+            metrics.enqueue_failures_total.labels(source=JobSource.S3.value).inc()
+            metrics.jobs_failed_total.labels(
+                source=JobSource.S3.value, error_type=ErrorType.ENQUEUE_FAILED.value
+            ).inc()
+            metrics.ingest_objects_total.labels(outcome="failed").inc()
             log.error("job_enqueue_failed", extra={"job_id": str(job_id), "object": uri})
             return PollResult(failed=1)
 
         with self._session() as session:
             mark_enqueued(session, job_id)
 
+        metrics.ingest_objects_total.labels(outcome="ingested").inc()
+        metrics.jobs_created_total.labels(source=JobSource.S3.value).inc()
         log.info(
             "object_ingested",
             extra={
@@ -267,6 +283,8 @@ def main() -> int:
     settings = get_settings()
     configure_logging("ingestor", settings.log_level, settings.log_json)
     wait_for_schema(get_engine())
+
+    metrics_server.start(settings.metrics_port, component="ingestor")
 
     ingestor = Ingestor(settings, build_storage(settings), SqsPublisher(build_queue(settings)))
     signal.signal(signal.SIGTERM, ingestor.request_stop)

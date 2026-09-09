@@ -19,6 +19,8 @@ spec:
       labels:
         {{- include "convoscore.labels" . | nindent 8 }}
         app.kubernetes.io/component: ingestor
+      annotations:
+        {{- include "convoscore.scrapeAnnotations" (dict "ctx" . "port" .Values.monitoring.metricsPort) | nindent 8 }}
     spec:
       serviceAccountName: {{ include "convoscore.fullname" . }}-ingestor
       terminationGracePeriodSeconds: {{ .Values.ingestor.terminationGracePeriodSeconds }}
@@ -27,10 +29,15 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "app.ingestor"]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.monitoring.metricsPort }}
           env:
             {{- include "convoscore.env" . | nindent 12 }}
             - name: COMPONENT
               value: ingestor
+            - name: METRICS_PORT
+              value: {{ .Values.monitoring.metricsPort | quote }}
           # Allows several poll intervals to pass before declaring the loop stuck.
           livenessProbe:
             exec:

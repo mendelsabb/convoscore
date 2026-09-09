@@ -1,0 +1,129 @@
+# Prometheus for the local demo.
+#
+# The plain prometheus chart rather than kube-prometheus-stack: no operator, no CRDs, no ordering
+# dependency between charts, and roughly a gigabyte less memory on a laptop that is already
+# running a cluster, LocalStack and PostgreSQL. The application metrics and the Kubernetes pod
+# health are identical either way. Production would use the operator stack (ServiceMonitor,
+# PrometheusRule) or Amazon Managed Prometheus. See DECISIONS.md section 13.
+
+server:
+  retention: 6h
+  persistentVolume:
+    # Metrics are disposable here; `make down` deletes the cluster anyway.
+    enabled: false
+  service:
+    type: NodePort
+    # kind maps this to 127.0.0.1:9090.
+    nodePort: 30900
+  global:
+    scrape_interval: 10s
+    evaluation_interval: 10s
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# Pod health and restarts come from here.
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+# node-exporter is off: it needs host mount propagation that Docker Desktop does not provide, and
+# on a single-node kind cluster the host's disk and network tell us nothing about the application.
+# Per-pod CPU and memory still arrive from the kubelet's cAdvisor endpoint.
+prometheus-node-exporter:
+  enabled: false
+
+# Alertmanager routing is out of scope for a local demo: the alert rules below are visible in
+# Prometheus itself and on the dashboard. What would page an on-call engineer in production is
+# documented in docs/observability.md.
+alertmanager:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: convoscore
+        rules:
+          # `for:` durations are deliberately short so these can be demonstrated inside a
+          # 20-minute walkthrough. Production values are in docs/observability.md.
+          - alert: ConvoScoreAPIDown
+            expr: up{job="kubernetes-pods", app_kubernetes_io_component="api"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "ConvoScore API is not being scraped"
+              description: "No API instance has responded for a minute. New conversations cannot be accepted."
+
+          - alert: ConvoScoreLLMErrorRateHigh
+            expr: |
+              sum(rate(convoscore_llm_calls_total{outcome!="success"}[5m]))
+                /
+              clamp_min(sum(rate(convoscore_llm_calls_total[5m])), 0.001)
+                > 0.5
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "More than half of scoring calls are failing"
+              description: "The provider is erroring or rejecting our requests. Jobs will exhaust their retries and fail."
+
+          - alert: ConvoScoreJobFailureRateHigh
+            expr: |
+              sum(rate(convoscore_jobs_failed_total[10m]))
+                /
+              clamp_min(sum(rate(convoscore_jobs_created_total[10m])), 0.001)
+                > 0.2
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "More than a fifth of jobs are failing"
+              description: "Check the error_type breakdown on the ConvoScore Overview dashboard."
+
+          - alert: ConvoScoreBacklogAging
+            expr: max(convoscore_oldest_pending_job_age_seconds) > 300
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Oldest unfinished job is over five minutes old"
+              description: "Work is arriving faster than it is being scored, or the workers have stalled."
+
+          - alert: ConvoScoreDeadLetterQueueNotEmpty
+            expr: max(convoscore_queue_messages{queue="dlq", state="visible"}) > 0
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Messages have reached the dead-letter queue"
+              description: "A consumer is failing before it can record why. The application's own retries never route here."
+
+          - alert: ConvoScoreWorkerStalled
+            expr: |
+              time() - max(convoscore_component_heartbeat_timestamp_seconds{component="worker"}) > 180
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "No worker has completed a loop pass in three minutes"
+              description: "The workers are alive but not turning. Nothing is being scored."
+
+# The chart's own scrape jobs are left in place rather than overridden.
+#
+# They already do exactly what this system needs: `kubernetes-pods` discovers pods carrying
+# prometheus.io/scrape annotations (the ConvoScore api, worker and ingestor),
+# `kubernetes-nodes-cadvisor` provides per-pod CPU and memory, and `kubernetes-service-endpoints`
+# picks up kube-state-metrics. Supplying our own scrape_configs appends to the defaults rather
+# than replacing them, which produces duplicate job names and a Prometheus that will not start.

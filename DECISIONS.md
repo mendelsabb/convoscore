@@ -222,6 +222,18 @@ status → LLM latency, error and retry counts → token usage and estimated cos
 success/failure/duplicates → pod health and restarts. Nothing on the dashboard is synthetic: every
 panel is a Prometheus query over metrics the application or Kubernetes actually emits.
 
+**Cardinality is the constraint that shapes the metrics.** A label with unbounded values turns one
+metric into millions of time series and takes down the monitoring system with the thing it was
+meant to watch. Nothing is labelled with a job id, a conversation id, an object key, or text from
+a conversation or an exception. The request metrics use the route *template*, so
+`/api/jobs/{job_id}` is one series rather than one per job, and unmatched paths collapse to a
+single label so a scanner cannot invent series. Tests assert this rather than trusting it.
+
+**Counters are pushed; state is pulled.** Backlog age, jobs by status and queue depth are read
+from PostgreSQL and SQS when Prometheus scrapes, not when the application acts. A gauge only
+updated on activity goes stale exactly when it matters: a stalled system stops emitting and the
+graph freezes at its last good value instead of showing the truth.
+
 **Probes.** Liveness never depends on external dependencies: an OpenAI outage must not make
 Kubernetes restart a healthy process, which would turn a dependency blip into a restart storm and
 fix nothing. API readiness checks only the database, because no endpoint can do useful work

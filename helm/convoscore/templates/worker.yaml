@@ -22,6 +22,8 @@ spec:
       labels:
         {{- include "convoscore.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
+      annotations:
+        {{- include "convoscore.scrapeAnnotations" (dict "ctx" . "port" .Values.monitoring.metricsPort) | nindent 8 }}
     spec:
       serviceAccountName: {{ include "convoscore.fullname" . }}-worker
       # On SIGTERM the worker finishes the message in flight and stops receiving. Without enough
@@ -32,10 +34,15 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "app.worker"]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.monitoring.metricsPort }}
           env:
             {{- include "convoscore.env" . | nindent 12 }}
             - name: COMPONENT
               value: worker
+            - name: METRICS_PORT
+              value: {{ .Values.monitoring.metricsPort | quote }}
           # The worker is a loop, not a server. Kubernetes already restarts a container whose
           # process exits, so what this adds is detection of a process that is stuck: alive, but
           # no longer going round its loop. The threshold allows for a full long-poll plus an

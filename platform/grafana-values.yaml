@@ -1,0 +1,66 @@
+# Grafana for the local demo.
+#
+# One provisioned datasource and one dashboard, loaded from a ConfigMap that the application Helm
+# chart ships. The dashboard travels with the code that emits the metrics, so a metric rename and
+# its panel change together in one commit.
+
+service:
+  type: NodePort
+  # kind maps this to 127.0.0.1:3000.
+  nodePort: 30300
+
+persistence:
+  # Nothing here is worth keeping: the datasource and dashboard are provisioned from files.
+  enabled: false
+
+# The demo is on 127.0.0.1 only, and asking a reviewer to hunt for a password to look at a
+# dashboard adds friction with no security benefit here. The admin account still exists for
+# anyone who wants to edit.
+adminUser: admin
+adminPassword: admin
+
+grafana.ini:
+  auth.anonymous:
+    enabled: true
+    org_role: Viewer
+  auth:
+    disable_login_form: false
+  users:
+    default_theme: dark
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+  # Land straight on the dashboard rather than an empty home page.
+  dashboards:
+    default_home_dashboard_path: /tmp/dashboards/convoscore-overview.json
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-server.monitoring.svc.cluster.local
+        isDefault: true
+        jsonData:
+          timeInterval: 10s
+
+# Picks up any ConfigMap labelled grafana_dashboard, which is how the application chart delivers
+# the ConvoScore Overview dashboard.
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: ALL
+    folderAnnotation: grafana_folder
+    provider:
+      foldersFromFilesStructure: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 384Mi

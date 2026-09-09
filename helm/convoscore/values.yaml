@@ -134,6 +134,18 @@ postgres:
     limits:
       memory: 1Gi
 
+# --- observability --------------------------------------------------------------------------
+monitoring:
+  # Pods carry prometheus.io annotations; Prometheus discovers them without any CRD or operator.
+  scrape: true
+  # Where the worker and ingestor serve /metrics. The API serves it on its own HTTP port.
+  metricsPort: 9100
+  dashboard:
+    # The Grafana dashboard ships with the application, so a metric and its panel change together.
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+
 # --- migrations ---------------------------------------------------------------------------
 migrations:
   # Run as an init container on the API pod. A Helm pre-install hook would run before the

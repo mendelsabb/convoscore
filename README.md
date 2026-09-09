@@ -57,20 +57,21 @@ Implementation in progress. Milestones:
 4. ✅ S3 ingestion into the same pipeline
 5. ✅ Deployed to Kubernetes: Docker, kind, Helm, LocalStack, Terraform, `make up` / `make down`
 6. ✅ React review UI at http://127.0.0.1:8080
-7. Prometheus metrics and Grafana dashboard
+7. ✅ Prometheus metrics and the *ConvoScore Overview* Grafana dashboard
 8. Failure injection, demo tooling, CI, final documentation
 
 Working today: `make up` builds both images, creates a kind cluster, deploys LocalStack,
 provisions the bucket, queue and IAM policies with Terraform, and installs the application.
 Conversations submitted through the API or dropped into storage are scored by the worker, stored
-durably, and reviewable in the web UI. `make down` removes all of it. Covered by 184 automated
-tests.
+durably, reviewable in the web UI, and visible in Grafana. `make down` removes all of it. Covered
+by 194 automated tests.
 
 Sample conversations live in [demo/fixtures](demo/fixtures): six for the API path and three for
 storage ingestion, covering satisfied, neutral, frustrated, churn-threat, escalation and
 data-privacy cases. Their scores are never hardcoded; they go through the model like anything else.
 
-Still to come: the review UI (milestone 6), metrics and dashboards (7), and failure injection (8).
+Still to come (milestone 8): deliberate failure injection, the demo runbook, a CI workflow, and
+the production AWS architecture document.
 
 Set `LLM_PROVIDER=fake` to exercise the whole pipeline deterministically with no OpenAI spend.
 
@@ -146,7 +147,7 @@ docs/           architecture (local and production AWS), rubric, observability, 
 - [docs/architecture-local.md](docs/architecture-local.md) — what actually runs on your machine
 - [docs/scoring-rubric.md](docs/scoring-rubric.md) — what sentiment and risk_score mean
 - `docs/architecture-production-aws.md` — what changes in real AWS (milestone 8)
-- `docs/observability.md` — metric catalogue, dashboard, alerts, probe semantics (milestone 7)
+- [docs/observability.md](docs/observability.md) — metric catalogue, dashboard, alerts, probe semantics
 - `docs/demo-runbook.md` — the live demo script (milestone 8)
 
 ## Security notes

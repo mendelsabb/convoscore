@@ -7,10 +7,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
+from app import metrics
 from app.api.deps import AppSettings, DbSession, Publisher
 from app.api.serializers import to_detail, to_job_status, to_summary
 from app.logging import get_logger
-from app.models import JobSource, JobStatus
+from app.models import ErrorType, JobSource, JobStatus
 from app.queue import QueuePublishError
 from app.repository import (
     create_job,
@@ -66,6 +67,10 @@ def submit_conversation(
         # nothing will ever process, mark it failed and tell the client, who can resubmit.
         mark_enqueue_failed(session, job_id, str(exc))
         session.commit()
+        metrics.enqueue_failures_total.labels(source=JobSource.API.value).inc()
+        metrics.jobs_failed_total.labels(
+            source=JobSource.API.value, error_type=ErrorType.ENQUEUE_FAILED.value
+        ).inc()
         log.error(
             "job_enqueue_failed",
             extra={"job_id": str(job_id), "source": JobSource.API.value, "error": str(exc)},
@@ -74,6 +79,7 @@ def submit_conversation(
         return JobCreatedResponse(job_id=job_id, status=JobStatus.FAILED.value)
 
     mark_enqueued(session, job_id)
+    metrics.jobs_created_total.labels(source=JobSource.API.value).inc()
     log.info(
         "job_created",
         extra={

@@ -122,3 +122,15 @@ capabilities:
   drop:
     - ALL
 {{- end -}}
+
+{{/*
+Prometheus discovery annotations. Pods opt in; nothing needs a CRD or an operator to find them.
+Usage: {{- include "convoscore.scrapeAnnotations" (dict "ctx" . "port" 9100) | nindent 8 }}
+*/}}
+{{- define "convoscore.scrapeAnnotations" -}}
+{{- if .ctx.Values.monitoring.scrape }}
+prometheus.io/scrape: "true"
+prometheus.io/port: {{ .port | quote }}
+prometheus.io/path: "/metrics"
+{{- end }}
+{{- end -}}
