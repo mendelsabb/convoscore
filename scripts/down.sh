@@ -14,9 +14,11 @@ else
   # below removes everything regardless.
   if have terraform && [ -d "$TERRAFORM_DIR/.terraform" ]; then
     step "Destroying Terraform-managed resources"
-    terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -input=false -no-color >/dev/null 2>&1 \
-      && ok "terraform destroy" \
-      || warn "terraform destroy did not complete (LocalStack may already be gone); continuing"
+    if terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -input=false -no-color >/dev/null 2>&1; then
+      ok "terraform destroy"
+    else
+      warn "terraform destroy did not complete (LocalStack may already be gone); continuing"
+    fi
   fi
 
   step "Deleting kind cluster '$CLUSTER_NAME'"

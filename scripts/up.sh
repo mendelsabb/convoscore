@@ -29,7 +29,7 @@ kc apply -f "$REPO_ROOT/platform/localstack.yaml" >/dev/null
 kc -n "$LOCALSTACK_NAMESPACE" rollout status deploy/localstack --timeout=300s
 
 printf '     waiting for the LocalStack endpoint'
-wait_for "localstack" 120 curl -sf "$LOCALSTACK_ENDPOINT/_localstack/health" \
+wait_for 120 curl -sf "$LOCALSTACK_ENDPOINT/_localstack/health" \
   || fail "LocalStack did not become reachable on $LOCALSTACK_ENDPOINT"
 printf '\n'
 ok "LocalStack ready at $LOCALSTACK_ENDPOINT"
@@ -99,7 +99,7 @@ helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "$RELEASE_NAME" \
 
 # --- 8. ready -----------------------------------------------------------------------------
 printf '     waiting for the API'
-wait_for "api" 120 curl -sf "$API_URL/readyz" || warn "the API is not answering yet; see: make status"
+wait_for 120 curl -sf "$API_URL/readyz" || warn "the API is not answering yet; see: make status"
 printf '\n'
 
 elapsed=$(( $(date +%s) - started_at ))

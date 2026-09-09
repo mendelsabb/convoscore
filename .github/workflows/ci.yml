@@ -1,0 +1,267 @@
+# Continuous integration.
+#
+# Validates the things this repository actually ships: the Python service, the React UI, the two
+# container images, the Helm chart and the Terraform. It deploys nothing: there is no cloud
+# environment to deploy to, and the assignment's deployment story is `make up` on a reviewer's
+# machine.
+#
+# No job here calls OpenAI. The test suite uses a deterministic fake provider, so CI costs nothing
+# and cannot fail because of someone else's outage.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      # The reliability logic depends on PostgreSQL semantics: conditional UPDATE ... RETURNING,
+      # server-side clock_timestamp(), JSONB and check constraints. A SQLite stand-in would test
+      # something we do not ship.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: convoscore
+          POSTGRES_PASSWORD: convoscore
+          POSTGRES_DB: convoscore_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U convoscore -d convoscore_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --frozen --extra dev
+
+      - name: Lint
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Tests
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://convoscore:convoscore@127.0.0.1:55432/convoscore_test
+          # Explicit, so a missing key can never be mistaken for a reason to call the real API.
+          LLM_PROVIDER: fake
+        run: uv run pytest -q
+
+      - name: Migrations apply from empty, and are reversible
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://convoscore:convoscore@127.0.0.1:55432/convoscore_ci
+        run: |
+          # A fresh database, so this checks the migrations rather than the models.
+          PGPASSWORD=convoscore psql -h 127.0.0.1 -p 55432 -U convoscore -d convoscore_test \
+            -c "CREATE DATABASE convoscore_ci"
+          uv run python -m app.migrate
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+  frontend:
+    name: Frontend typecheck and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  images:
+    name: Container images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: backend
+          - name: web
+            context: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          # Built and discarded: CI proves the image builds, it does not publish anything.
+          push: false
+          load: true
+          tags: convoscore-${{ matrix.name }}:ci
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Image runs as a non-root user
+        run: |
+          user="$(docker image inspect convoscore-${{ matrix.name }}:ci --format '{{.Config.User}}')"
+          echo "configured user: '${user}'"
+          if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
+            echo "::error::image must not run as root"
+            exit 1
+          fi
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Lint
+        run: helm lint ./helm/convoscore
+
+      - name: Render
+        run: helm template convoscore ./helm/convoscore --namespace convoscore > /tmp/rendered.yaml
+
+      - name: Rendered manifests are valid YAML
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
+          print(f"{len(docs)} manifests rendered")
+          for doc in docs:
+              print(" ", doc["kind"], doc["metadata"]["name"])
+          assert docs, "the chart rendered nothing"
+          PY
+
+      - name: No secret values are rendered into manifests
+        # The chart references secrets by name only. If a literal value ever appears here, the
+        # output of `helm template` stops being safe to share.
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          text = open("/tmp/rendered.yaml").read()
+          problems = []
+          for pattern, why in [
+              (r"sk-[A-Za-z0-9_-]{16,}", "an API key"),
+              (r"OPENAI_API_KEY:\s*\S", "a literal OpenAI key value"),
+              (r"POSTGRES_PASSWORD:\s*\S", "a literal database password"),
+          ]:
+              for match in re.finditer(pattern, text):
+                  line = text[: match.start()].count("\n") + 1
+                  problems.append(f"line {line}: {why} ({match.group()[:24]})")
+          if problems:
+              print("\n".join(problems))
+              sys.exit("secret material found in rendered manifests")
+          print("no secret values in rendered output")
+          PY
+
+      - name: Chart renders with the fake provider too
+        # The zero-cost configuration is a documented path, so it must keep working.
+        run: helm template convoscore ./helm/convoscore --set llm.provider=fake > /dev/null
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform -chdir=terraform/local fmt -check -recursive -diff
+
+      - name: Init
+        # No backend and no provider calls: this validates the configuration, it does not create
+        # anything. There is no cloud account involved anywhere in this repository.
+        run: terraform -chdir=terraform/local init -backend=false -input=false
+
+      - name: Validate
+        run: terraform -chdir=terraform/local validate
+
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script" || exit 1
+          done
+          echo "all scripts parse"
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # SC1091: sourced lib.sh is resolved at runtime, not by the linter.
+          shellcheck --external-sources --exclude=SC1091 scripts/*.sh
+
+      - name: No secrets are committed
+        run: |
+          if git grep -nE "sk-[A-Za-z0-9_-]{20,}" -- . ':!*.md' ':!.github/workflows/*'; then
+            echo "::error::what looks like an API key is committed"
+            exit 1
+          fi
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env must never be committed"
+            exit 1
+          fi
+          echo "no secrets committed"

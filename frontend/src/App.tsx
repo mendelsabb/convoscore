@@ -6,6 +6,7 @@ import { Overview } from "./pages/Overview";
 import { Submit } from "./pages/Submit";
 import { Conversations } from "./pages/Conversations";
 import { ConversationDetailPage } from "./pages/ConversationDetail";
+import { Demo } from "./pages/Demo";
 
 function HealthIndicator() {
   const { data, isError } = useQuery({
@@ -33,6 +34,16 @@ function HealthIndicator() {
 }
 
 export function App() {
+  // The Demo tab appears only when the API says demo mode is on, so a normal deployment shows no
+  // trace of it.
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: api.getHealth,
+    refetchInterval: 15000,
+  });
+  const demoMode = health?.config?.demo_mode === true;
+  const armed = Number(health?.config?.demo_failures_armed ?? 0);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -45,6 +56,11 @@ export function App() {
           </NavLink>
           <NavLink to="/submit">Submit</NavLink>
           <NavLink to="/conversations">Conversations</NavLink>
+          {demoMode ? (
+            <NavLink to="/demo">
+              Demo{armed > 0 ? <span className="badge badge-failed" style={{ marginLeft: 6 }}>{armed}</span> : null}
+            </NavLink>
+          ) : null}
         </nav>
         <div className="topbar-right">
           <HealthIndicator />
@@ -57,6 +73,7 @@ export function App() {
           <Route path="/submit" element={<Submit />} />
           <Route path="/conversations" element={<Conversations />} />
           <Route path="/conversations/:id" element={<ConversationDetailPage />} />
+          <Route path="/demo" element={<Demo />} />
           <Route
             path="*"
             element={

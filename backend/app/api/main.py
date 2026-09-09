@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import conversations, observability, stats
+from app.api import conversations, demo, observability, stats
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, ping
 from app.factories import build_queue
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
         title="ConvoScore",
         description=DESCRIPTION,
@@ -63,6 +64,12 @@ def create_app() -> FastAPI:
 
     app.include_router(conversations.router, prefix="/api")
     app.include_router(stats.router, prefix="/api")
+
+    # Demo controls exist only when explicitly enabled: with DEMO_MODE off the routes are not
+    # registered at all, so they cannot be reached even by accident.
+    if settings.demo_mode:
+        app.include_router(demo.router, prefix="/api")
+        log.warning("demo_mode_enabled", extra={"detail": "failure injection endpoints mounted"})
 
     # Request metrics, database-derived gauges and /metrics.
     observability.install(app)

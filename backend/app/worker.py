@@ -461,7 +461,16 @@ def main() -> int:
     install_queue_gauges(queue, settings.sqs_dlq_name)
     metrics_server.start(settings.metrics_port, component="worker")
 
-    worker = Worker(settings, queue, build_provider(settings))
+    provider = build_provider(settings)
+    if settings.demo_mode:
+        # A pass-through wrapper unless a failure has been armed, so leaving it installed costs
+        # nothing. What it cannot do is fake a metric: it makes the real call fail instead.
+        from app.demo import FaultInjectingProvider
+
+        provider = FaultInjectingProvider(provider, lambda: get_session_factory()())
+        log.warning("demo_mode_enabled", extra={"detail": "failure injection is available"})
+
+    worker = Worker(settings, queue, provider)
     signal.signal(signal.SIGTERM, worker.request_stop)
     signal.signal(signal.SIGINT, worker.request_stop)
     worker.run_forever()

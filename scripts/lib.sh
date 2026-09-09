@@ -46,9 +46,11 @@ cluster_exists() {
   have kind && kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"
 }
 
-# wait_for <description> <timeout-seconds> <command...>
+# wait_for <timeout-seconds> <command...>
+# Polls until the command succeeds, printing a dot per attempt. Callers print their own message
+# first, so this deliberately takes no description.
 wait_for() {
-  local description="$1" timeout="$2"; shift 2
+  local timeout="$1"; shift
   local deadline=$(( $(date +%s) + timeout ))
   while true; do
     if "$@" >/dev/null 2>&1; then

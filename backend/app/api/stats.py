@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from app import demo
 from app.api.deps import AppSettings, DbSession
 from app.db import ping
 from app.repository import stats as repository_stats
@@ -65,6 +66,13 @@ def health_details(
         ),
         _queue_health(request),
     ]
+
+    # Armed failures are worth surfacing prominently: a demo left armed would otherwise look like
+    # a real outage to the next person who opens the UI.
+    demo_state: dict[str, object] = {}
+    if settings.demo_mode:
+        armed = demo.state(session)
+        demo_state = {"demo_failures_armed": armed.total, "demo_failures": armed.modes}
     return HealthDetailsResponse(
         healthy=all(dependency.healthy for dependency in dependencies),
         dependencies=dependencies,
@@ -75,6 +83,7 @@ def health_details(
             "pricing_version": PRICING_VERSION,
             # Whether a key is configured is useful to an operator; the value never is.
             "openai_key_configured": settings.openai_key_configured,
+            **demo_state,
         },
     )
 

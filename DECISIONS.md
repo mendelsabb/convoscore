@@ -248,18 +248,38 @@ false positive.
 
 ## 14. Failure injection that is real
 
-**LLM failures** are armed through a demo-only API (`DEMO_MODE=true`) and stored as
-counted "failure tokens" in PostgreSQL so they work deterministically with several worker pods.
-Before each LLM call the worker's provider wrapper consumes a token and, if one was armed, fails at
-the provider boundary: a simulated timeout (after a short delay so it registers in the latency
-histogram), a simulated 5xx, or a malformed response that the real validator rejects. Everything
-downstream — error classification, visibility-timeout backoff, attempt counting, state transitions,
-metrics, logs — is the production code path. Prometheus and Grafana change because they are
-scraping real counters, not because the demo touched them.
+**Decision.** A demo-only API arms counted "failure tokens" stored in PostgreSQL. Before each
+scoring call the worker's provider wrapper consumes one; if it does, the call fails at the
+provider boundary and the real OpenAI call is never made.
 
-**Infrastructure failures** are `make demo-infra-failure`, an operator command that deletes a
-worker (or API, or PostgreSQL) pod and lets Kubernetes recreate it. The UI has no such button by
-design (see §12). Restart durability is shown by restarting every component and re-reading results.
+**What makes it honest.** Everything after the failure is the ordinary production path: the error
+is classified as transient or permanent, the retry is scheduled by extending the SQS message's
+visibility timeout, the attempt is recorded on the job row, counters increment, Prometheus scrapes
+as usual, and Grafana moves because the numbers moved. Nothing in the demo writes to Prometheus,
+edits a dashboard, or special-cases the worker. A demo that nudged the metrics directly would
+prove only that the demo works.
+
+**Why the tokens live in the database.** There are two worker replicas. An in-memory flag would
+only affect whichever pod happened to claim the job, so the demo would be a coin toss in front of
+an audience. A row is shared, and decrementing it is atomic, so exactly one call consumes each
+token.
+
+**Why the real call is skipped.** The failure is simulated at the boundary rather than by making a
+deliberately broken request. Demonstrating failure therefore costs nothing and does not depend on
+how the provider happens to behave that afternoon. The malformed case is the exception worth
+noting: the invalid payload is run through the *real* validator, so the rejection comes from the
+contract rather than from a hand-thrown exception.
+
+Three modes: a timeout (waits, then fails as a client timeout does), a server error, and a
+malformed response. One armed failure is absorbed by a retry; four exhausts the three attempts and
+fails the job with the reason recorded.
+
+**Infrastructure failure is an operator command**, `make demo-infra-failure`, which deletes a pod
+and lets Kubernetes replace it. It is deliberately not a button in the UI: the application has no
+Kubernetes RBAC and no service account token mounted, so it *cannot* delete a pod. A demo control
+that could would be a control an attacker could use. `make demo-restart` restarts every component
+and deletes the database pod, then re-reads the job counts to show that results outlive every
+process that touched them.
 
 ## 15. Lightweight React UI behind the API
 
@@ -278,7 +298,21 @@ The screens are Overview, Submit, Conversations and Detail, plus the demo contro
 Screens that show work in progress poll, because the pipeline is asynchronous and the state
 transitions are the thing worth seeing.
 
-## 16. Delivery: Helm now, ArgoCD in production, no ApplicationSet
+## 16. CI validates what the repository ships, and deploys nothing
+
+**Decision.** A GitHub Actions workflow runs backend lint and tests against a real PostgreSQL,
+frontend typecheck, tests and build, both container image builds, `helm lint` plus a render, and
+`terraform fmt` and `validate`. It also checks that the images do not run as root, that no secret
+value appears in rendered manifests, and that nothing resembling an API key is committed.
+
+**Why no CD.** There is no environment to deploy to. The deployment story for this assignment is
+`make up` on a reviewer's machine, and a pipeline that pushed to a cloud account would be theatre.
+What production CD would add is written down in the production architecture document.
+
+**No job calls OpenAI.** The suite uses the deterministic fake provider, so CI costs nothing and
+cannot fail because of someone else's outage.
+
+## 17. Delivery: Helm now, ArgoCD in production, no ApplicationSet
 
 Helm is the deployment interface locally and in production. ArgoCD (one `Application` per
 environment) is the production GitOps layer and is documented, not run locally — it would add a
@@ -286,7 +320,7 @@ controller and a Git round-trip to a demo that has neither a second environment 
 cluster. `ApplicationSet` is only justified when applications must be *generated* across many
 clusters or environments; it is not.
 
-## 17. Data sensitivity
+## 18. Data sensitivity
 
 Raw conversation text is stored because a human reviewer must see it. The raw LLM response is not
 stored — only the validated result and execution metadata — because it adds no review value and is
@@ -294,7 +328,7 @@ one more copy of customer content. Logs contain job ids, statuses, error types a
 message content or secrets. In production: encryption at rest (RDS/S3 KMS), retention and deletion
 policies, PII redaction before the LLM call where required, and access control on the review UI.
 
-## 18. Migrations
+## 19. Migrations
 
 Alembic migrations run in an init container of the API deployment (with a PostgreSQL advisory lock)
 because on a fresh `helm install` a pre-install hook would run before the in-chart PostgreSQL
@@ -313,6 +347,20 @@ RDS provisioned separately, migrations run as an explicit pipeline step before r
 - Estimated cost only; no reconciliation with provider billing.
 - No authentication on the API or UI; it is reachable only on `127.0.0.1`.
 - No re-scoring of an existing conversation under a new prompt version (one job per conversation).
+- CI validates but does not deploy: there is no environment to deploy to (§16).
+- The production Terraform and ArgoCD manifests are described in
+  [docs/architecture-production-aws.md](docs/architecture-production-aws.md) rather than written
+  as example files. Untested code presented as production-ready would be worse than a design
+  someone can argue with.
+
+## The one thing to fix first
+
+If this were becoming a real service, the **transactional outbox** goes in before anything else.
+It is the only place in the design where a crash can leave a job that nothing will ever process.
+Today the gap is surfaced honestly, as a `503` with the job marked `enqueue_failed`, but surfacing
+a problem is not the same as fixing it.
+
+Authentication would follow immediately, since there is none at all today.
 
 ## What changes at scale
 

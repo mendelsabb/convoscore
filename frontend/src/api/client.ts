@@ -6,6 +6,8 @@ import type {
   ConversationDetail,
   ConversationFilters,
   ConversationList,
+  DemoState,
+  FailureMode,
   HealthDetails,
   JobCreated,
   JobStatusResponse,
@@ -82,4 +84,16 @@ export const api = {
   getStats: () => request<Stats>("/api/stats"),
 
   getHealth: () => request<HealthDetails>("/api/health/details"),
+
+  // Demo controls. These 404 unless the API was started with DEMO_MODE enabled, which is what the
+  // Demo page uses to decide whether to render at all.
+  getDemoState: () => request<DemoState>("/api/demo/state"),
+
+  armFailure: (mode: FailureMode, count: number) =>
+    request<DemoState>("/api/demo/llm-failure", {
+      method: "POST",
+      body: JSON.stringify({ mode, count }),
+    }),
+
+  clearFailures: () => request<DemoState>("/api/demo/llm-failure", { method: "DELETE" }),
 };

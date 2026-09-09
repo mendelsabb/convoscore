@@ -132,3 +132,11 @@ export interface ConversationFilters {
   limit?: number;
   offset?: number;
 }
+
+export type FailureMode = "timeout" | "http_500" | "malformed";
+
+export interface DemoState {
+  armed: Record<string, number>;
+  total_armed: number;
+  modes: FailureMode[];
+}

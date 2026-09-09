@@ -58,20 +58,17 @@ Implementation in progress. Milestones:
 5. ✅ Deployed to Kubernetes: Docker, kind, Helm, LocalStack, Terraform, `make up` / `make down`
 6. ✅ React review UI at http://127.0.0.1:8080
 7. ✅ Prometheus metrics and the *ConvoScore Overview* Grafana dashboard
-8. Failure injection, demo tooling, CI, final documentation
+8. ✅ Failure injection, demo tooling, CI, production architecture
 
-Working today: `make up` builds both images, creates a kind cluster, deploys LocalStack,
-provisions the bucket, queue and IAM policies with Terraform, and installs the application.
-Conversations submitted through the API or dropped into storage are scored by the worker, stored
-durably, reviewable in the web UI, and visible in Grafana. `make down` removes all of it. Covered
-by 194 automated tests.
+`make up` builds both images, creates a kind cluster, deploys LocalStack, provisions the bucket,
+queue and IAM policies with Terraform, and installs the application. Conversations submitted
+through the API or dropped into storage are scored by the worker, stored durably, reviewable in
+the web UI, and visible in Grafana. `make down` removes all of it. Covered by 221 automated tests
+and a GitHub Actions workflow.
 
 Sample conversations live in [demo/fixtures](demo/fixtures): six for the API path and three for
 storage ingestion, covering satisfied, neutral, frustrated, churn-threat, escalation and
 data-privacy cases. Their scores are never hardcoded; they go through the model like anything else.
-
-Still to come (milestone 8): deliberate failure injection, the demo runbook, a CI workflow, and
-the production AWS architecture document.
 
 Set `LLM_PROVIDER=fake` to exercise the whole pipeline deterministically with no OpenAI spend.
 
@@ -95,11 +92,31 @@ and tests, `uv` (Python) and Node 20+ are used.
 
 ```bash
 cp .env.example .env          # put your OpenAI key in .env (gitignored, never committed)
-make up                       # cluster + LocalStack + Terraform + app, prints URLs
+make up                       # cluster + LocalStack + Terraform + monitoring + app, prints URLs
 make demo-data                # submits sample conversations via the API and uploads some to S3
 make status                   # pods, URLs, dependency health, job counts
 make down                     # tears everything down
 ```
+
+Demonstrating failure and recovery:
+
+```bash
+make demo-infra-failure       # delete a worker pod, watch Kubernetes replace it
+make demo-restart             # restart everything, prove the results survived
+make test                     # the full suite; never calls OpenAI
+```
+
+Deliberate scoring failures are armed from the **Demo** page in the UI, or over the API:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/demo/llm-failure \
+  -H 'Content-Type: application/json' -d '{"mode":"http_500","count":1}'
+```
+
+One armed failure is absorbed by a retry; four exhausts the attempts and fails the job. The
+failure is real: the provider call fails, the error is classified, the retry is scheduled through
+the SQS visibility timeout, and the metrics move because the counters moved. Nothing writes to
+Prometheus directly. Disarm with `curl -X DELETE http://127.0.0.1:8000/api/demo/llm-failure`.
 
 A cold `make up` takes roughly three minutes, most of which is pulling the kind node and
 LocalStack images. Re-running it takes about thirty seconds and preserves your data, so it is also
@@ -127,6 +144,8 @@ The review UI has four screens:
   source, sentiment and risk band. Filters live in the URL so a view can be shared.
 - **Detail** — the transcript, the score and rationale, the model and prompt version, token usage,
   latency, estimated cost, attempt count and timeline.
+- **Demo** — arms deliberate scoring failures. Only appears when `DEMO_MODE` is on; the endpoints
+  are not registered at all otherwise.
 
 ## Repository layout
 
@@ -146,9 +165,9 @@ docs/           architecture (local and production AWS), rubric, observability, 
 - [DECISIONS.md](DECISIONS.md) — why the system is shaped this way, tradeoffs, known limitations
 - [docs/architecture-local.md](docs/architecture-local.md) — what actually runs on your machine
 - [docs/scoring-rubric.md](docs/scoring-rubric.md) — what sentiment and risk_score mean
-- `docs/architecture-production-aws.md` — what changes in real AWS (milestone 8)
+- [docs/architecture-production-aws.md](docs/architecture-production-aws.md) — what changes in real AWS, and why
 - [docs/observability.md](docs/observability.md) — metric catalogue, dashboard, alerts, probe semantics
-- `docs/demo-runbook.md` — the live demo script (milestone 8)
+- [docs/demo-runbook.md](docs/demo-runbook.md) — a 20–30 minute walkthrough
 
 ## Security notes
 

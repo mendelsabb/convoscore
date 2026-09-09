@@ -190,3 +190,36 @@ class IngestedObject(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<IngestedObject s3://{self.bucket}/{self.key} {self.status}>"
+
+
+class FailureMode(StrEnum):
+    """Ways the scoring provider can be made to fail on purpose, in demo mode only."""
+
+    TIMEOUT = "timeout"
+    HTTP_500 = "http_500"
+    MALFORMED = "malformed"
+
+
+class DemoFailureToken(Base):
+    """How many upcoming scoring calls should fail, per mode.
+
+    In the database rather than in a process, because there are two worker replicas: an in-memory
+    flag would only affect whichever pod happened to hold it, and the demo would be a coin toss.
+    Decrementing a row is atomic, so exactly one call consumes each token.
+    """
+
+    __tablename__ = "demo_failure_tokens"
+
+    mode: Mapped[str] = mapped_column(String(16), primary_key=True)
+    remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("remaining >= 0", name="ck_demo_failure_tokens_remaining"),
+        CheckConstraint(
+            "mode IN ('timeout','http_500','malformed')", name="ck_demo_failure_tokens_mode"
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<DemoFailureToken {self.mode} remaining={self.remaining}>"

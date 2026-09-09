@@ -204,3 +204,22 @@ class HealthDetailsResponse(BaseModel):
     healthy: bool
     dependencies: list[DependencyHealth]
     config: dict[str, Any]
+
+
+# --------------------------------------------------------------------------------------
+# Demo controls (mounted only when DEMO_MODE is true)
+# --------------------------------------------------------------------------------------
+
+
+class DemoArmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["timeout", "http_500", "malformed"]
+    # Capped: the control is for demonstrating failure handling, not for disabling scoring.
+    count: Annotated[int, Field(ge=0, le=20)] = 1
+
+
+class DemoStateResponse(BaseModel):
+    armed: dict[str, int]
+    total_armed: int
+    modes: list[str]
