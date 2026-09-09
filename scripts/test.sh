@@ -43,4 +43,19 @@ log "running backend tests"
 cd "$REPO_ROOT/backend"
 uv run --extra dev pytest "$@"
 
+# The frontend checks need node_modules, which a reviewer who only ran `make up` will not have
+# (the UI is built inside Docker). Skip rather than fail, and say so.
+if command -v npm >/dev/null 2>&1; then
+  cd "$REPO_ROOT/frontend"
+  if [ -d node_modules ]; then
+    log "running frontend typecheck and tests"
+    npm run typecheck
+    npm test
+  else
+    log "skipping frontend checks: run 'npm install' in frontend/ first"
+  fi
+else
+  log "skipping frontend checks: npm is not installed"
+fi
+
 log "all tests passed"

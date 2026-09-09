@@ -252,9 +252,19 @@ design (see §12). Restart durability is shown by restarting every component and
 ## 15. Lightweight React UI behind the API
 
 A small Vite + React app served by nginx, which also reverse-proxies `/api` to the API service.
-The browser never talks to PostgreSQL, SQS, S3 or OpenAI. The UI exists to demonstrate the product
-and satisfy human review: overview, submit, list/filter, detail, demo controls. No state
-management library, no design system beyond a stylesheet.
+
+**Why the proxy.** The app only ever requests relative paths, so there is no build-time API URL to
+configure per environment and no CORS policy to maintain. More importantly it means the browser
+has exactly one way to reach anything: it cannot talk to PostgreSQL, SQS, S3 or OpenAI, and it can
+only do what the API already allows.
+
+**What is deliberately absent.** No state management library beyond React Query, no component
+framework, no design system: four screens and a table do not justify them. Filters live in the URL
+rather than in component state, so a reviewer can share "everything above 75".
+
+The screens are Overview, Submit, Conversations and Detail, plus the demo controls added in §14.
+Screens that show work in progress poll, because the pipeline is asynchronous and the state
+transitions are the thing worth seeing.
 
 ## 16. Delivery: Helm now, ArgoCD in production, no ApplicationSet
 

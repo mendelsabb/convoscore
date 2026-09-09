@@ -1,0 +1,93 @@
+{{- if .Values.web.enabled }}
+{{/*
+The review UI: a static bundle served by nginx, which also proxies /api to the API service.
+
+That proxy is deliberate. The browser only ever calls relative paths, so there is no CORS policy
+to maintain and no build-time API URL, and the UI has no route to PostgreSQL, SQS, S3 or OpenAI.
+It can only do what the API allows.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "convoscore.fullname" . }}-web
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: {{ .Values.web.service.type }}
+  selector:
+    {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port }}
+      targetPort: http
+      {{- if eq .Values.web.service.type "NodePort" }}
+      # kind maps this to 127.0.0.1:8080 on the host.
+      nodePort: {{ .Values.web.service.nodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "convoscore.fullname" . }}-web
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "convoscore.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: web
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # Answered by nginx itself. Whether the API is healthy is a separate question, surfaced
+          # in the UI rather than by restarting the web server.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # The unprivileged nginx image's user.
+            runAsUser: 101
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            # nginx writes its pid and temporary bodies here; the root filesystem is read-only.
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+{{- end }}

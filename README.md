@@ -56,14 +56,15 @@ Implementation in progress. Milestones:
 3. ✅ Async scoring pipeline: SQS worker + structured OpenAI scoring
 4. ✅ S3 ingestion into the same pipeline
 5. ✅ Deployed to Kubernetes: Docker, kind, Helm, LocalStack, Terraform, `make up` / `make down`
-6. React review UI
+6. ✅ React review UI at http://127.0.0.1:8080
 7. Prometheus metrics and Grafana dashboard
-8. Failure injection, demo tooling, final documentation
+8. Failure injection, demo tooling, CI, final documentation
 
-Working today: `make up` builds the image, creates a kind cluster, deploys LocalStack, provisions
-the bucket, queue and IAM policies with Terraform, and installs the application. Conversations
-submitted through the API or dropped into storage are scored by the worker and stored durably.
-`make down` removes all of it. Covered by 175 automated tests plus the manual checks below.
+Working today: `make up` builds both images, creates a kind cluster, deploys LocalStack,
+provisions the bucket, queue and IAM policies with Terraform, and installs the application.
+Conversations submitted through the API or dropped into storage are scored by the worker, stored
+durably, and reviewable in the web UI. `make down` removes all of it. Covered by 184 automated
+tests.
 
 Sample conversations live in [demo/fixtures](demo/fixtures): six for the API path and three for
 storage ingestion, covering satisfied, neutral, frustrated, churn-threat, escalation and
@@ -116,11 +117,21 @@ The pipeline, the failure behaviour and the metrics are identical; only the scor
 | Prometheus | http://127.0.0.1:9090 |
 | LocalStack (S3/SQS emulation) | http://127.0.0.1:4566 |
 
+The review UI has four screens:
+
+- **Overview** — job counts by status, average risk, token usage and estimated cost, dependency
+  health, and the most recent conversations.
+- **Submit** — paste a transcript and watch it move through `pending → processing → completed`.
+- **Conversations** — every scored conversation from both ingestion paths, filterable by status,
+  source, sentiment and risk band. Filters live in the URL so a view can be shared.
+- **Detail** — the transcript, the score and rationale, the model and prompt version, token usage,
+  latency, estimated cost, attempt count and timeline.
+
 ## Repository layout
 
 ```
 backend/        FastAPI API, worker and ingestor (one image, three commands), Alembic migrations, tests
-frontend/       React review UI, served by nginx which also proxies /api
+frontend/       React review UI (Vite + TypeScript), served by nginx which also proxies /api
 helm/convoscore Helm chart for the application (api, worker, ingestor, web, postgres + PVC)
 terraform/local Terraform for the AWS-like resources used locally (S3, SQS + DLQ, IAM) on LocalStack
 platform/       kind config, LocalStack manifest, Prometheus/Grafana values — installed by make up

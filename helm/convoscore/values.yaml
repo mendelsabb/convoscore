@@ -92,6 +92,25 @@ ingestor:
     limits:
       memory: 384Mi
 
+web:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: convoscore-web
+    # Defaults to the same tag as the backend; both images are built together.
+    tag: ""
+  service:
+    type: NodePort
+    port: 8080
+    # Mapped to 127.0.0.1:8080 by the kind config.
+    nodePort: 30880
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
 # --- database ----------------------------------------------------------------------------
 postgres:
   # In-cluster PostgreSQL with a PersistentVolumeClaim, so restart durability can be shown.
