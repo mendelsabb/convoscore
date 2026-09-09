@@ -55,34 +55,21 @@ Implementation in progress. Milestones:
 2. ✅ FastAPI backend with PostgreSQL persistence and migrations
 3. ✅ Async scoring pipeline: SQS worker + structured OpenAI scoring
 4. ✅ S3 ingestion into the same pipeline
-5. Deploy to kind with Docker, Helm, LocalStack and Terraform (`make up` / `make down`)
+5. ✅ Deployed to Kubernetes: Docker, kind, Helm, LocalStack, Terraform, `make up` / `make down`
 6. React review UI
 7. Prometheus metrics and Grafana dashboard
 8. Failure injection, demo tooling, final documentation
 
-Working today: both ingestion paths feed one pipeline. Submit a conversation through the API or
-drop a JSON object into storage, and the same worker scores it and stores the sentiment, risk
-band, rationale, token usage, latency and estimated cost. Retries, duplicate-delivery protection
-and storage de-duplication are in place, covered by 175 tests.
-
-```bash
-make test        # PostgreSQL via docker compose, then the full suite (no OpenAI calls)
-```
-
-Kubernetes packaging lands in milestone 5. Until then the three processes can be run directly:
-
-```bash
-export DATABASE_URL=... AWS_ENDPOINT_URL=http://127.0.0.1:4566   # LocalStack for S3 and SQS
-cd backend
-uv run python -m app.migrate                        # apply migrations
-uv run uvicorn app.api.main:app --port 8000         # API, docs at /docs
-uv run python -m app.worker                         # scoring worker
-uv run python -m app.ingestor                       # storage ingestion
-```
+Working today: `make up` builds the image, creates a kind cluster, deploys LocalStack, provisions
+the bucket, queue and IAM policies with Terraform, and installs the application. Conversations
+submitted through the API or dropped into storage are scored by the worker and stored durably.
+`make down` removes all of it. Covered by 175 automated tests plus the manual checks below.
 
 Sample conversations live in [demo/fixtures](demo/fixtures): six for the API path and three for
 storage ingestion, covering satisfied, neutral, frustrated, churn-threat, escalation and
 data-privacy cases. Their scores are never hardcoded; they go through the model like anything else.
+
+Still to come: the review UI (milestone 6), metrics and dashboards (7), and failure injection (8).
 
 Set `LLM_PROVIDER=fake` to exercise the whole pipeline deterministically with no OpenAI spend.
 
@@ -106,12 +93,18 @@ and tests, `uv` (Python) and Node 20+ are used.
 
 ```bash
 cp .env.example .env          # put your OpenAI key in .env (gitignored, never committed)
-make up                       # cluster + LocalStack + Terraform + monitoring + app, prints URLs
+make up                       # cluster + LocalStack + Terraform + app, prints URLs
 make demo-data                # submits sample conversations via the API and uploads some to S3
+make status                   # pods, URLs, dependency health, job counts
 make down                     # tears everything down
 ```
 
-`make help` lists every target. Commands become available as milestones land (see Status).
+A cold `make up` takes roughly three minutes, most of which is pulling the kind node and
+LocalStack images. Re-running it takes about thirty seconds and preserves your data, so it is also
+the way to deploy a code change. `make help` lists every target.
+
+To run the whole system without spending anything on OpenAI, set `LLM_PROVIDER=fake` in `.env`.
+The pipeline, the failure behaviour and the metrics are identical; only the scorer changes.
 
 ## URLs (once `make up` finishes)
 

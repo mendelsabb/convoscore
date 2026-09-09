@@ -1,0 +1,111 @@
+{{- if .Values.postgres.enabled }}
+{{/*
+PostgreSQL in the cluster, backed by a PersistentVolumeClaim.
+
+This exists so restart durability can be demonstrated: delete the pod, or restart every
+component, and the scored results are still there. It is deliberately a plain StatefulSet rather
+than a third-party chart, so there is nothing hidden between the manifest and the database.
+
+This is NOT the production recommendation. Production maps to RDS PostgreSQL Multi-AZ with
+automated backups and point-in-time recovery. See docs/architecture-production-aws.md.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "convoscore.postgresHost" . }}
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  # Headless: a StatefulSet member is addressed directly, and nothing load balances across one
+  # database.
+  clusterIP: None
+  selector:
+    {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "convoscore.postgresHost" . }}
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ include "convoscore.postgresHost" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "convoscore.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      securityContext:
+        runAsUser: 70        # postgres in the alpine image
+        runAsGroup: 70
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.existingSecret }}
+                  key: {{ .Values.postgres.passwordSecretKey }}
+            # The image refuses to initialise into a non-empty mount point unless the data lives
+            # in a subdirectory of the volume.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.username | quote }}, "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.username | quote }}, "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      {{- if not .Values.postgres.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.postgres.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}
+  {{- end }}
+{{- end }}

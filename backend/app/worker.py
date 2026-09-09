@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, wait_for_schema
 from app.factories import build_provider, build_queue
+from app.heartbeat import touch as touch_heartbeat
 from app.logging import configure_logging, get_logger
 from app.models import ErrorType
 from app.queue import QueueMessage, QueueUnavailableError, SqsQueue
@@ -204,6 +205,7 @@ class Worker:
     def run_once(self) -> ProcessOutcome:
         """Handle at most one message. Returns IDLE when the queue is empty."""
         self.last_heartbeat = time.time()
+        touch_heartbeat()
         messages = self.queue.receive(
             wait_time_seconds=self.settings.worker_wait_time_seconds, max_messages=1
         )

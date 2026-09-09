@@ -1,0 +1,15 @@
+ConvoScore {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }}.
+
+  API and Swagger docs   http://127.0.0.1:8000/docs
+  LocalStack (S3, SQS)   http://127.0.0.1:4566
+
+Scoring backend: {{ .Values.llm.provider }}{{ if eq .Values.llm.provider "openai" }} ({{ .Values.llm.model }}){{ end }}
+Queue: {{ .Values.aws.queueName }}   Bucket: s3://{{ .Values.aws.bucket }}/{{ .Values.aws.prefix }}
+
+Try it:
+
+  make demo-data      submit the sample conversations through both ingestion paths
+  make status         pods, URLs and health
+  make logs COMPONENT=worker
+
+Results live in PostgreSQL on a PersistentVolumeClaim, so they survive pod restarts.

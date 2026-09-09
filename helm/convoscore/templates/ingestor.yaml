@@ -1,0 +1,57 @@
+{{/*
+The storage ingestion path: polls the incoming prefix and turns new objects into the same jobs
+the API creates. Duplicate protection lives in the database, keyed on (bucket, key, etag).
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "convoscore.fullname" . }}-ingestor
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingestor
+spec:
+  replicas: {{ .Values.ingestor.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "ingestor") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "convoscore.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ingestor
+    spec:
+      serviceAccountName: {{ include "convoscore.fullname" . }}-ingestor
+      terminationGracePeriodSeconds: {{ .Values.ingestor.terminationGracePeriodSeconds }}
+      containers:
+        - name: ingestor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.ingestor"]
+          env:
+            {{- include "convoscore.env" . | nindent 12 }}
+            - name: COMPONENT
+              value: ingestor
+          # Allows several poll intervals to pass before declaring the loop stuck.
+          livenessProbe:
+            exec:
+              command: ["python", "-m", "app.heartbeat", "--max-age", "120"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            exec:
+              command: ["python", "-m", "app.heartbeat", "--max-age", "120"]
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 30
+          securityContext:
+            {{- include "convoscore.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.ingestor.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

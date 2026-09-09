@@ -1,0 +1,122 @@
+# ConvoScore application chart.
+#
+# No secret values live here. The OpenAI key and the database password are Kubernetes Secrets
+# created by `make up` from a gitignored .env; this chart only references them by name, so
+# `helm template` output is safe to share.
+
+image:
+  repository: convoscore-backend
+  # Set by scripts/up.sh to the freshly built tag. A fixed tag would not roll pods on rebuild.
+  tag: latest
+  # Never: images are loaded into the kind node with `kind load`, so there is nothing to pull.
+  pullPolicy: Never
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- application configuration (non-secret) --------------------------------------------
+config:
+  environment: local
+  logLevel: INFO
+  logJson: true
+  demoMode: true
+  maxAttempts: 3
+  # Must exceed the LLM timeout plus database work, and match the queue's setting in Terraform.
+  visibilityTimeoutSeconds: 90
+  workerWaitTimeSeconds: 20
+  retryBaseBackoffSeconds: 5
+  retryMaxBackoffSeconds: 60
+  ingestPollIntervalSeconds: 10
+
+# --- AWS-compatible resources (names come from terraform output) ------------------------
+aws:
+  endpointUrl: http://localstack.localstack.svc.cluster.local:4566
+  region: us-east-1
+  queueName: convoscore-scoring
+  bucket: convoscore-conversations
+  prefix: incoming/
+  # LocalStack accepts these conventional dummies and grants nothing. In production this block
+  # is removed entirely and credentials come from EKS Pod Identity.
+  accessKeyId: test
+  secretAccessKey: test
+
+# --- LLM --------------------------------------------------------------------------------
+llm:
+  # "openai" or "fake". The fake provider runs the whole pipeline deterministically at zero cost.
+  provider: openai
+  model: gpt-4.1-mini
+  timeoutSeconds: 30
+  # Sent only when set. Reasoning models reject the parameter.
+  temperature: 0
+  # Created by scripts/secrets.sh; never rendered by this chart.
+  existingSecret: convoscore-openai
+  apiKeySecretKey: OPENAI_API_KEY
+
+# --- workloads ---------------------------------------------------------------------------
+api:
+  replicaCount: 1
+  service:
+    type: NodePort
+    port: 8000
+    # Mapped to 127.0.0.1:8000 by the kind config.
+    nodePort: 30800
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+
+worker:
+  # Two replicas so pod deletion during the demo is visibly survivable, and so duplicate
+  # protection is exercised rather than merely claimed.
+  replicaCount: 2
+  # Long enough for an in-flight job to finish on SIGTERM, so a rollout does not create retries.
+  terminationGracePeriodSeconds: 60
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+
+ingestor:
+  # One replica: object listing is cheap and a single poller keeps the demo easy to reason about.
+  # Duplicate protection would make more replicas safe.
+  replicaCount: 1
+  terminationGracePeriodSeconds: 30
+  resources:
+    requests:
+      cpu: 25m
+      memory: 160Mi
+    limits:
+      memory: 384Mi
+
+# --- database ----------------------------------------------------------------------------
+postgres:
+  # In-cluster PostgreSQL with a PersistentVolumeClaim, so restart durability can be shown.
+  # This is NOT the production recommendation: production maps to RDS PostgreSQL Multi-AZ.
+  enabled: true
+  image: postgres:16-alpine
+  database: convoscore
+  username: convoscore
+  # Created by scripts/secrets.sh with a generated password.
+  existingSecret: convoscore-postgres
+  passwordSecretKey: POSTGRES_PASSWORD
+  persistence:
+    enabled: true
+    size: 5Gi
+    # kind's default provisioner.
+    storageClassName: standard
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# --- migrations ---------------------------------------------------------------------------
+migrations:
+  # Run as an init container on the API pod. A Helm pre-install hook would run before the
+  # in-chart PostgreSQL exists on a first install; this waits for the database instead.
+  enabled: true

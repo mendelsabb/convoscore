@@ -1,0 +1,39 @@
+# Single-node kind cluster for the ConvoScore demo.
+#
+# NodePorts are mapped straight to localhost rather than running an ingress controller. For a
+# handful of services on one node an ingress controller would be a component to install, wait for
+# and debug, in exchange for hostnames nobody needs locally.
+#
+# containerPort must equal the Service's nodePort. listenAddress is pinned to 127.0.0.1 so the
+# demo is not published to the local network.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: convoscore
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Review UI (milestone 6)
+      - containerPort: 30880
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      # API and Swagger docs
+      - containerPort: 30800
+        hostPort: 8000
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      # Grafana (milestone 7)
+      - containerPort: 30300
+        hostPort: 3000
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      # Prometheus (milestone 7)
+      - containerPort: 30900
+        hostPort: 9090
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      # LocalStack, so Terraform on the host reaches the same endpoint the pods use
+      - containerPort: 31566
+        hostPort: 4566
+        listenAddress: "127.0.0.1"
+        protocol: TCP

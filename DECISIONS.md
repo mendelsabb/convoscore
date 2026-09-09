@@ -179,6 +179,10 @@ nginx image because its build toolchain and runtime are entirely different.
   Apache-2.0 tag and is pinned deliberately. IAM policy *enforcement* and state persistence were
   always paid features, so: IAM resources are created and documented but not enforced locally, and
   `make up` is idempotent so it can re-apply Terraform if the LocalStack pod restarts.
+- **`SQS_ENDPOINT_STRATEGY=off`.** This is the only LocalStack queue-URL format the AWS Terraform
+  provider accepts; it validates the URL shape and rejects the `path` strategy outright. The URL's
+  hostname is never resolved by the application, because boto3 sends every SQS request to the
+  configured endpoint and carries the queue URL in the request body.
 - **Terraform** provisions exactly what the application uses — the S3 bucket, the SQS queue and its
   DLQ, and per-component IAM policies/roles — and its outputs are fed into the Helm release. There is
   no decorative Terraform.
@@ -219,8 +223,16 @@ success/failure/duplicates → pod health and restarts. Nothing on the dashboard
 panel is a Prometheus query over metrics the application or Kubernetes actually emits.
 
 **Probes.** Liveness never depends on external dependencies: an OpenAI outage must not make
-Kubernetes restart a healthy process. API readiness checks only the database (jobs cannot be
-created without it); worker and ingestor liveness is a loop heartbeat.
+Kubernetes restart a healthy process, which would turn a dependency blip into a restart storm and
+fix nothing. API readiness checks only the database, because no endpoint can do useful work
+without it; the queue and object store are reported through `/api/health/details` instead, since
+they degrade specific features rather than making the API useless.
+
+The worker and ingestor are loops rather than servers, and Kubernetes already restarts a container
+whose process exits. What a probe adds there is detection of a process that is *stuck*: alive, but
+no longer going round its loop. Each pass touches a heartbeat file and the probe checks its age,
+with a threshold that allows a full long-poll plus an LLM timeout plus retry backoff without a
+false positive.
 
 ## 14. Failure injection that is real
 

@@ -1,0 +1,66 @@
+{{/*
+The scoring workers.
+
+A Deployment of long-running pods, not a Job per conversation. Creating a pod per LLM call would
+mean scheduler latency and API server churn for two seconds of work, and would require the
+application to hold RBAC to create workloads. See DECISIONS.md section 4.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "convoscore.fullname" . }}-worker
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "convoscore.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "convoscore.fullname" . }}-worker
+      # On SIGTERM the worker finishes the message in flight and stops receiving. Without enough
+      # grace, every rollout would abandon in-progress jobs and manufacture retries.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.worker"]
+          env:
+            {{- include "convoscore.env" . | nindent 12 }}
+            - name: COMPONENT
+              value: worker
+          # The worker is a loop, not a server. Kubernetes already restarts a container whose
+          # process exits, so what this adds is detection of a process that is stuck: alive, but
+          # no longer going round its loop. The threshold allows for a full long-poll plus an
+          # LLM timeout plus retry backoff without a false positive.
+          livenessProbe:
+            exec:
+              command: ["python", "-m", "app.heartbeat", "--max-age", "180"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            exec:
+              command: ["python", "-m", "app.heartbeat", "--max-age", "180"]
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 30
+          securityContext:
+            {{- include "convoscore.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Holds the heartbeat file; the root filesystem is read-only.
+        - name: tmp
+          emptyDir: {}

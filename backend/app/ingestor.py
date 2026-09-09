@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.db import get_engine, get_session_factory, wait_for_schema
 from app.factories import build_queue, build_storage
+from app.heartbeat import touch as touch_heartbeat
 from app.logging import configure_logging, get_logger
 from app.models import IngestStatus, JobSource
 from app.queue import JobPublisher, QueuePublishError, SqsPublisher
@@ -140,6 +141,7 @@ class Ingestor:
     # -- one pass ----------------------------------------------------------------------
 
     def poll_once(self) -> PollResult:
+        touch_heartbeat()
         objects = self.store.list_objects()
         result = PollResult(discovered=len(objects))
         for stored in objects:

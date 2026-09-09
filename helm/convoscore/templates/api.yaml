@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "convoscore.fullname" . }}-api
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: {{ .Values.api.service.type }}
+  selector:
+    {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+      {{- if eq .Values.api.service.type "NodePort" }}
+      # kind maps this to 127.0.0.1:8000 on the host.
+      nodePort: {{ .Values.api.service.nodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "convoscore.fullname" . }}-api
+  labels:
+    {{- include "convoscore.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "convoscore.selectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "convoscore.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: {{ include "convoscore.fullname" . }}-api
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        # Migrations run here rather than as a Helm hook: on a first install a pre-install hook
+        # would run before the in-chart PostgreSQL exists. This waits for the database, takes a
+        # PostgreSQL advisory lock so concurrent replicas cannot both migrate, and applies
+        # Alembic. In production, with the database provisioned separately, migrations belong in
+        # the deployment pipeline instead.
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.migrate"]
+          env:
+            {{- include "convoscore.env" . | nindent 12 }}
+            - name: COMPONENT
+              value: migrate
+          securityContext:
+            {{- include "convoscore.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            {{- include "convoscore.env" . | nindent 12 }}
+            - name: COMPONENT
+              value: api
+          # Liveness deliberately checks nothing external. A database or OpenAI outage must not
+          # make Kubernetes restart a process that is working correctly; that turns a dependency
+          # blip into a restart storm and fixes nothing.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness checks PostgreSQL, because no endpoint can do useful work without it. The
+          # queue and object store are reported through /api/health/details instead: they degrade
+          # specific features rather than making the API useless.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Generous startup budget so a slow first boot is not mistaken for a failure.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 40
+          securityContext:
+            {{- include "convoscore.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The root filesystem is read-only, so anything needing scratch space gets this.
+        - name: tmp
+          emptyDir: {}
