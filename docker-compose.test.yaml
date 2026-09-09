@@ -1,0 +1,19 @@
+# PostgreSQL for the automated test suite only. The real stack runs in Kubernetes (make up).
+# Port 55432 avoids clashing with any PostgreSQL already running on the developer's machine.
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: convoscore
+      POSTGRES_PASSWORD: convoscore
+      POSTGRES_DB: convoscore_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      # Test data never needs to survive; running on tmpfs keeps the suite fast.
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U convoscore -d convoscore_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

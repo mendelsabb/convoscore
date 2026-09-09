@@ -51,14 +51,22 @@ visibility timeout and idempotent state transitions in PostgreSQL. See
 
 Implementation in progress. Milestones:
 
-1. Architecture, decisions and rubric documented (this commit)
-2. FastAPI backend with PostgreSQL persistence and migrations
+1. ✅ Architecture, decisions and rubric documented
+2. ✅ FastAPI backend with PostgreSQL persistence and migrations (`make test`)
 3. Async scoring pipeline: SQS worker + structured OpenAI scoring
 4. S3 ingestion into the same pipeline
 5. Deploy to kind with Docker, Helm, LocalStack and Terraform (`make up` / `make down`)
 6. React review UI
 7. Prometheus metrics and Grafana dashboard
 8. Failure injection, demo tooling, final documentation
+
+Working today: the API (submit, poll, browse, inspect, stats, probes) against PostgreSQL, with
+migrations and 81 tests. Scoring itself arrives in milestone 3, so submitted jobs stay `pending`.
+
+```bash
+make test                                   # PostgreSQL via docker compose, then the full suite
+cd backend && uv run uvicorn app.api.main:app --port 8000   # then open http://127.0.0.1:8000/docs
+```
 
 ## Prerequisites
 
