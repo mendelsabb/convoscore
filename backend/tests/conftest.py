@@ -68,10 +68,17 @@ def engine() -> Iterator[Engine]:
 
 @pytest.fixture
 def session(engine: Engine) -> Iterator[Session]:
-    """A clean database per test."""
+    """A clean database per test.
+
+    The table list comes from the models rather than being hard-coded, so adding a table does not
+    silently leave stale rows behind. CASCADE handles the foreign keys between them.
+    """
+    from app.models import Base
+
     factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    tables = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
     with engine.begin() as connection:
-        connection.execute(text("TRUNCATE TABLE conversations"))
+        connection.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
     db = factory()
     try:
         yield db

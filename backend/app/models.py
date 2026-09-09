@@ -11,12 +11,14 @@ from typing import Any
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -142,3 +144,49 @@ class Conversation(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Conversation {self.id} {self.source} {self.status}>"
+
+
+class IngestStatus(StrEnum):
+    INGESTED = "ingested"
+    INVALID = "invalid"
+    FAILED = "failed"
+
+
+class IngestedObject(Base):
+    """One row per object the ingestor has seen, so polling cannot create duplicate jobs.
+
+    The key is ``(bucket, key, etag)``. Using the etag rather than the key alone means:
+
+    * re-listing the same unchanged object is skipped, however often we poll;
+    * re-uploading *different* content to the same key is a new conversation and a new job,
+      which is what someone correcting a bad export would expect.
+
+    Objects that fail validation are recorded too. Without that, a malformed file would be
+    re-read and re-rejected on every single poll.
+    """
+
+    __tablename__ = "ingested_objects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    etag: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    discovered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+    )
+
+    __table_args__ = (
+        UniqueConstraint("bucket", "key", "etag", name="uq_ingested_objects_identity"),
+        CheckConstraint(
+            "status IN ('ingested','invalid','failed')", name="ck_ingested_objects_status"
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<IngestedObject s3://{self.bucket}/{self.key} {self.status}>"

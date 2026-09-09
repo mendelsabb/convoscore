@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "What time does support close on Fridays?"
+    },
+    {
+      "role": "agent",
+      "content": "Our phone lines close at 6pm, and chat is open until 9pm."
+    },
+    {
+      "role": "customer",
+      "content": "Great, thanks."
+    }
+  ],
+  "metadata": {
+    "channel": "chat",
+    "tags": [
+      "general"
+    ]
+  }
+}

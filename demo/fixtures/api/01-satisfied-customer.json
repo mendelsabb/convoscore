@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "Hi, I just wanted to say the replacement adapter arrived a day early and works perfectly."
+    },
+    {
+      "role": "agent",
+      "content": "That's great to hear. Is there anything else I can help with today?"
+    },
+    {
+      "role": "customer",
+      "content": "No, that's everything. Thanks for sorting it out so quickly."
+    }
+  ],
+  "metadata": {
+    "channel": "chat",
+    "tags": [
+      "hardware"
+    ]
+  }
+}

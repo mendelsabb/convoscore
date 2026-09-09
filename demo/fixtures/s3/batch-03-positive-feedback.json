@@ -1,0 +1,18 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "Just wanted to pass on that your engineer was excellent. Fixed it in ten minutes and explained everything."
+    },
+    {
+      "role": "agent",
+      "content": "Thank you, I'll pass that on to the team."
+    }
+  ],
+  "metadata": {
+    "channel": "email",
+    "tags": [
+      "feedback"
+    ]
+  }
+}

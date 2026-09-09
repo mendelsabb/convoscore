@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "My order was due Tuesday and the tracking hasn't updated since Sunday."
+    },
+    {
+      "role": "agent",
+      "content": "Let me check with the courier and come back to you today."
+    },
+    {
+      "role": "customer",
+      "content": "Please do, I need it before the weekend."
+    }
+  ],
+  "metadata": {
+    "channel": "email",
+    "tags": [
+      "delivery"
+    ]
+  }
+}

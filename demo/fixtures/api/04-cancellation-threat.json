@@ -1,0 +1,23 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "This is the third time I've contacted you about being double charged. Nobody calls back."
+    },
+    {
+      "role": "agent",
+      "content": "I understand your frustration. Let me escalate this to our billing team."
+    },
+    {
+      "role": "customer",
+      "content": "You said that last week. If it isn't refunded today I'm cancelling both accounts and disputing the charge with my bank."
+    }
+  ],
+  "metadata": {
+    "channel": "phone",
+    "tags": [
+      "billing",
+      "escalation"
+    ]
+  }
+}

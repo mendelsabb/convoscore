@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "You've charged me for the premium tier but I downgraded two months ago."
+    },
+    {
+      "role": "agent",
+      "content": "I can see the downgrade request. I'll request a refund for both months."
+    },
+    {
+      "role": "customer",
+      "content": "Thank you. Please confirm in writing, I don't want this happening a third time."
+    }
+  ],
+  "metadata": {
+    "channel": "email",
+    "tags": [
+      "billing"
+    ]
+  }
+}

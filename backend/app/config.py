@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     aws_access_key_id: str | None = None
     aws_secret_access_key: SecretStr | None = None
     sqs_queue_name: str = "convoscore-scoring"
+    s3_bucket: str = "convoscore-conversations"
+    # Only this prefix is read, and the ingestor's IAM policy is scoped to it.
+    s3_prefix: str = "incoming/"
+    ingest_poll_interval_seconds: int = Field(default=10, ge=1, le=3600)
 
     # --- LLM ----------------------------------------------------------------------
     llm_provider: Literal["openai", "fake"] = "openai"
@@ -97,6 +101,8 @@ class Settings(BaseSettings):
             "llm_provider": self.llm_provider,
             "model": self.openai_model if self.llm_provider == "openai" else "fake-model",
             "queue": self.sqs_queue_name,
+            "bucket": self.s3_bucket,
+            "prefix": self.s3_prefix,
         }
 
     @property

@@ -20,7 +20,15 @@ from typing import Any
 from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.models import LAST_ERROR_MAX_CHARS, Conversation, ErrorType, JobSource, JobStatus
+from app.models import (
+    LAST_ERROR_MAX_CHARS,
+    Conversation,
+    ErrorType,
+    IngestedObject,
+    IngestStatus,
+    JobSource,
+    JobStatus,
+)
 from app.schemas import ConversationInput
 
 # --------------------------------------------------------------------------------------
@@ -347,6 +355,66 @@ def stats(session: Session) -> dict[str, Any]:
         "estimated_cost_usd": Decimal(totals[6]),
         "average_llm_latency_ms": float(totals[7]) if totals[7] is not None else None,
     }
+
+
+# --------------------------------------------------------------------------------------
+# Storage ingestion
+# --------------------------------------------------------------------------------------
+
+
+def object_already_seen(session: Session, bucket: str, key: str, etag: str) -> bool:
+    """Has this exact object content already been handled?
+
+    Keyed on the etag as well as the key, so re-uploading corrected content to the same key is
+    treated as new work rather than skipped.
+    """
+    return (
+        session.execute(
+            select(IngestedObject.id).where(
+                IngestedObject.bucket == bucket,
+                IngestedObject.key == key,
+                IngestedObject.etag == etag,
+            )
+        ).first()
+        is not None
+    )
+
+
+def record_ingested_object(
+    session: Session,
+    *,
+    bucket: str,
+    key: str,
+    etag: str,
+    size_bytes: int | None,
+    status: IngestStatus,
+    conversation_id: uuid.UUID | None = None,
+    error: str | None = None,
+) -> IngestedObject:
+    """Record that an object was handled, whatever the outcome.
+
+    Failures are recorded too: without a row, a malformed object would be re-read and re-rejected
+    on every poll for as long as it sits in the bucket.
+    """
+    record = IngestedObject(
+        bucket=bucket,
+        key=key,
+        etag=etag,
+        size_bytes=size_bytes,
+        conversation_id=conversation_id,
+        status=status.value,
+        error=_truncate(error) if error else None,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def ingest_counts(session: Session) -> dict[str, int]:
+    rows = session.execute(
+        select(IngestedObject.status, func.count()).group_by(IngestedObject.status)
+    ).all()
+    return {status: int(count) for status, count in rows}
 
 
 def _truncate(text: str) -> str:

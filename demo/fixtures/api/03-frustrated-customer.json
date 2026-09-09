@@ -1,0 +1,27 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "The mobile app has logged me out four times today. I keep losing what I was in the middle of."
+    },
+    {
+      "role": "agent",
+      "content": "I'm sorry about that. Which version of the app are you running?"
+    },
+    {
+      "role": "customer",
+      "content": "Whatever the latest one is. This started after the update last week and it's making the app unusable for me."
+    },
+    {
+      "role": "agent",
+      "content": "Thank you, I'll raise this with our mobile team."
+    }
+  ],
+  "metadata": {
+    "channel": "chat",
+    "tags": [
+      "mobile",
+      "bug"
+    ]
+  }
+}

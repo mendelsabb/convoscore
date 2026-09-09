@@ -1,0 +1,23 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "I received an email containing another customer's full name and address. I think you have a data problem."
+    },
+    {
+      "role": "agent",
+      "content": "Thank you for reporting that. Could you forward the email to us?"
+    },
+    {
+      "role": "customer",
+      "content": "I already did, an hour ago. If I don't hear back today I'm reporting this to the data protection regulator."
+    }
+  ],
+  "metadata": {
+    "channel": "email",
+    "tags": [
+      "privacy",
+      "incident"
+    ]
+  }
+}

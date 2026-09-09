@@ -54,29 +54,35 @@ Implementation in progress. Milestones:
 1. ✅ Architecture, decisions and rubric documented
 2. ✅ FastAPI backend with PostgreSQL persistence and migrations
 3. ✅ Async scoring pipeline: SQS worker + structured OpenAI scoring
-4. S3 ingestion into the same pipeline
+4. ✅ S3 ingestion into the same pipeline
 5. Deploy to kind with Docker, Helm, LocalStack and Terraform (`make up` / `make down`)
 6. React review UI
 7. Prometheus metrics and Grafana dashboard
 8. Failure injection, demo tooling, final documentation
 
-Working today: submit a conversation, have a worker score it with OpenAI, and read the result back
-with its sentiment, risk band, rationale, token usage, latency and estimated cost. Retries,
-duplicate-delivery protection and failure handling are in place, covered by 142 tests.
+Working today: both ingestion paths feed one pipeline. Submit a conversation through the API or
+drop a JSON object into storage, and the same worker scores it and stores the sentiment, risk
+band, rationale, token usage, latency and estimated cost. Retries, duplicate-delivery protection
+and storage de-duplication are in place, covered by 175 tests.
 
 ```bash
 make test        # PostgreSQL via docker compose, then the full suite (no OpenAI calls)
 ```
 
-Kubernetes packaging lands in milestone 5. Until then the processes can be run directly:
+Kubernetes packaging lands in milestone 5. Until then the three processes can be run directly:
 
 ```bash
-export DATABASE_URL=... AWS_ENDPOINT_URL=http://127.0.0.1:4566   # LocalStack for SQS
+export DATABASE_URL=... AWS_ENDPOINT_URL=http://127.0.0.1:4566   # LocalStack for S3 and SQS
 cd backend
 uv run python -m app.migrate                        # apply migrations
 uv run uvicorn app.api.main:app --port 8000         # API, docs at /docs
 uv run python -m app.worker                         # scoring worker
+uv run python -m app.ingestor                       # storage ingestion
 ```
+
+Sample conversations live in [demo/fixtures](demo/fixtures): six for the API path and three for
+storage ingestion, covering satisfied, neutral, frustrated, churn-threat, escalation and
+data-privacy cases. Their scores are never hardcoded; they go through the model like anything else.
 
 Set `LLM_PROVIDER=fake` to exercise the whole pipeline deterministically with no OpenAI spend.
 

@@ -1,0 +1,23 @@
+{
+  "messages": [
+    {
+      "role": "customer",
+      "content": "I'd like to speak to a manager please."
+    },
+    {
+      "role": "agent",
+      "content": "I can certainly help you with that. May I ask what the issue is?"
+    },
+    {
+      "role": "customer",
+      "content": "I've explained it three times to three different people. I want someone who can actually make a decision about my refund."
+    }
+  ],
+  "metadata": {
+    "channel": "phone",
+    "tags": [
+      "refund",
+      "escalation"
+    ]
+  }
+}

@@ -9,8 +9,17 @@ from app.config import Settings
 from app.logging import get_logger
 from app.queue import SqsQueue, build_sqs_client
 from app.scoring.provider import FakeProvider, LLMProvider, OpenAIProvider
+from app.storage import ObjectStore, build_s3_client
 
 log = get_logger(__name__)
+
+
+def _aws_secret(settings: Settings) -> str | None:
+    return (
+        settings.aws_secret_access_key.get_secret_value()
+        if settings.aws_secret_access_key
+        else None
+    )
 
 
 def build_queue(settings: Settings) -> SqsQueue:
@@ -18,13 +27,19 @@ def build_queue(settings: Settings) -> SqsQueue:
         endpoint_url=settings.aws_endpoint_url,
         region=settings.aws_region,
         access_key_id=settings.aws_access_key_id,
-        secret_access_key=(
-            settings.aws_secret_access_key.get_secret_value()
-            if settings.aws_secret_access_key
-            else None
-        ),
+        secret_access_key=_aws_secret(settings),
     )
     return SqsQueue(client, settings.sqs_queue_name)
+
+
+def build_storage(settings: Settings) -> ObjectStore:
+    client = build_s3_client(
+        endpoint_url=settings.aws_endpoint_url,
+        region=settings.aws_region,
+        access_key_id=settings.aws_access_key_id,
+        secret_access_key=_aws_secret(settings),
+    )
+    return ObjectStore(client, settings.s3_bucket, settings.s3_prefix)
 
 
 def build_provider(settings: Settings) -> LLMProvider:
