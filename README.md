@@ -49,7 +49,7 @@ visibility timeout and idempotent state transitions in PostgreSQL. See
 
 ## Status
 
-Implementation in progress. Milestones:
+Complete. Delivered in eight milestones, one commit each:
 
 1. ✅ Architecture, decisions and rubric documented
 2. ✅ FastAPI backend with PostgreSQL persistence and migrations
@@ -83,7 +83,6 @@ Everything runs locally at zero cost except the OpenAI API calls.
 | `kubectl`, `helm` (3 or 4) | `brew install kubectl helm` |
 | `terraform` ≥ 1.5 | `brew install terraform` |
 | `make`, `bash`, `curl` | already present on macOS/Linux |
-| `aws` CLI (optional) | only for uploading S3 demo fixtures; a dockerised fallback is used otherwise |
 
 You do not need Python or Node on the host: images are built in Docker. For local development
 and tests, `uv` (Python) and Node 20+ are used.
@@ -166,6 +165,7 @@ docs/           architecture (local and production AWS), rubric, observability, 
 - [docs/architecture-local.md](docs/architecture-local.md) — what actually runs on your machine
 - [docs/scoring-rubric.md](docs/scoring-rubric.md) — what sentiment and risk_score mean
 - [docs/architecture-production-aws.md](docs/architecture-production-aws.md) — what changes in real AWS, and why
+- [docs/diagrams/](docs/diagrams/) — both architectures as diagrams (draw.io sources and PNG exports)
 - [docs/observability.md](docs/observability.md) — metric catalogue, dashboard, alerts, probe semantics
 - [docs/demo-runbook.md](docs/demo-runbook.md) — a 20–30 minute walkthrough
 
